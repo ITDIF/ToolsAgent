@@ -1,0 +1,145 @@
+import json
+from abc import ABC, abstractmethod
+
+
+class BaseLLMProvider(ABC):
+    """LLM Provider 抽象基类"""
+
+    def __init__(self):
+        self.token_usage = {"input": 0, "output": 0, "total": 0}
+
+    def reset_token_usage(self):
+        """重置 token 计数"""
+        self.token_usage = {"input": 0, "output": 0, "total": 0}
+
+    def get_token_usage(self):
+        """获取 token 使用统计"""
+        return self.token_usage.copy()
+
+    def _update_token_usage(self, input_tokens, output_tokens):
+        """更新 token 计数"""
+        self.token_usage["input"] += input_tokens
+        self.token_usage["output"] += output_tokens
+        self.token_usage["total"] += input_tokens + output_tokens
+
+    @abstractmethod
+    def chat_with_tools(
+            self,
+            messages,
+            tools,
+            system_prompt=None,
+            **kwargs
+    ):
+        """
+        与LLM对话，支持工具调用
+
+        Args:
+            messages: 对话历史 [{"role": "user", "content": "..."}]
+            tools: 工具定义列表
+            system_prompt: 系统提示词
+            **kwargs: 其他参数
+
+        Returns:
+            {
+                "content": "回复内容",
+                "tool_calls": [{"name": "...", "arguments": {...}}]
+            }
+        """
+        pass
+
+    @abstractmethod
+    def chat(
+            self,
+            messages,
+            system_prompt=None,
+            **kwargs
+    ):
+        """
+        普通对话，不使用工具
+
+        Args:
+            messages: 对话历史
+            system_prompt: 系统提示词
+            **kwargs: 其他参数
+
+        Returns:
+            回复内容字符串
+        """
+        pass
+
+
+class OpenAICompatibleProvider(BaseLLMProvider):
+    """OpenAI 兼容 API Provider 基类"""
+
+    def __init__(self, api_key, base_url, model):
+        from openai import OpenAI
+        super().__init__()
+        self.api_key = api_key
+        self.model = model
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+
+    def chat_with_tools(self, messages, tools, system_prompt=None, **kwargs):
+        openai_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["input_schema"]
+                }
+            }
+            for tool in tools
+        ]
+
+        final_messages = []
+        if system_prompt:
+            final_messages.append({"role": "system", "content": system_prompt})
+        final_messages.extend(messages)
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=final_messages,
+            tools=openai_tools if openai_tools else None,
+            **kwargs
+        )
+
+        # 统计 token
+        if response.usage:
+            self._update_token_usage(
+                response.usage.prompt_tokens,
+                response.usage.completion_tokens
+            )
+
+        choice = response.choices[0]
+        result = {"content": choice.message.content or "", "tool_calls": []}
+
+        if choice.message.tool_calls:
+            for tc in choice.message.tool_calls:
+                result["tool_calls"].append({
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "arguments": json.loads(tc.function.arguments)
+                })
+
+        return result
+
+    def chat(self, messages, system_prompt=None, **kwargs):
+        final_messages = []
+        if system_prompt:
+            final_messages.append({"role": "system", "content": system_prompt})
+        final_messages.extend(messages)
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=final_messages,
+            **kwargs
+        )
+
+        # 统计 token
+        if response.usage:
+            self._update_token_usage(
+                response.usage.prompt_tokens,
+                response.usage.completion_tokens
+            )
+
+        return response.choices[0].message.content
