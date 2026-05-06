@@ -150,52 +150,80 @@ def select_model():
     return _build_provider(key, model)
 
 
-def session_menu():
-    """会话菜单"""
-    print("\n会话选项:")
-    print("1. 新建会话")
-    print("2. 加载历史会话")
-    print("3. 查看操作日志")
-
-    choice = input("请输入选项 (1-3): ").strip()
-
-    if choice == "1":
-        return generate_session_id(), []
-    elif choice == "2":
-        sessions = list_sessions()
-        if not sessions:
-            print("没有历史会话")
-            return None, None
-        print("\n历史会话:")
-        for i, s in enumerate(sessions, 1):
-            print(f"{i}. {s['id']} ({s['message_count']}条消息, 更新于{s['updated_at']}")
-        idx = input("\n选择会话编号: ").strip()
-        try:
-            idx = int(idx) - 1
-            if 0 <= idx < len(sessions):
-                session_id = sessions[idx]['id']
-                messages = load_session(session_id)
-                return session_id, messages
+def _cmd_history(agent):
+    """加载历史会话"""
+    sessions = list_sessions()
+    if not sessions:
+        print("没有历史会话")
+        return None, None
+    print("\n历史会话:")
+    for i, s in enumerate(sessions, 1):
+        print(f"{i}. {s['id']} ({s['message_count']}条消息, 更新于{s['updated_at']})")
+    idx = input("\n选择会话编号(回车取消): ").strip()
+    if not idx:
+        return None, None
+    try:
+        idx = int(idx) - 1
+        if 0 <= idx < len(sessions):
+            sid = sessions[idx]['id']
+            msgs = load_session(sid)
+            if msgs is not None:
+                print(f"已加载会话: {sid}")
+                return sid, msgs
             else:
-                print("无效选项")
+                print("加载失败")
                 return None, None
-        except ValueError:
-            print("无效输入")
+        else:
+            print("无效选项")
             return None, None
-    elif choice == "3":
-        logs = get_recent_logs(20)
-        if not logs:
-            print("没有操作记录")
-            return None, None
-        print("\n最近操作记录:")
-        for log in logs:
-            result = log['result']
-            status = "成功" if result.get('success') else "失败"
-            print(f"[{log['timestamp']}] {log['action_type']} - {status}")
+    except ValueError:
+        print("无效输入")
         return None, None
-    else:
-        print("无效选项")
-        return None, None
+
+
+def _cmd_logs():
+    """查看操作日志"""
+    logs = get_recent_logs(20)
+    if not logs:
+        print("没有操作记录")
+        return
+    print("\n最近操作记录:")
+    for log in logs:
+        result = log['result']
+        status = "成功" if result.get('success') else "失败"
+        print(f"[{log['timestamp']}] {log['action_type']} - {status}")
+
+
+def _save_and_exit(session_id, agent):
+    """保存会话并显示统计"""
+    save_session(session_id, agent.messages)
+    usage = agent.get_token_usage()
+    print(f"\n本次会话 Token 统计:")
+    print(f"  输入: {usage['input']}")
+    print(f"  输出: {usage['output']}")
+    print(f"  总计: {usage['total']}")
+    print("\n会话已保存，再见!")
+
+
+def _print_stats(elapsed, before_usage, after_usage):
+    """打印时间和 Token 统计"""
+    delta_in = after_usage["input"] - before_usage["input"]
+    delta_out = after_usage["output"] - before_usage["output"]
+    delta_total = after_usage["total"] - before_usage["total"]
+    print(f"  [{elapsed:.2f}s | 本次 Token 输入:{delta_in} 输出:{delta_out} 总计:{delta_total} | 累计:{after_usage['total']}]")
+    print()
+
+
+def _print_help():
+    print("""可用命令:
+  /help      显示此帮助
+  /history   加载历史会话
+  /logs      查看最近操作日志
+  /save      手动保存当前会话
+  /model     切换模型
+  /quit      退出程序
+  也可直接输入自然语言与助手对话
+""")
 
 
 def main():
@@ -226,65 +254,69 @@ def main():
     else:
         print(f"已加载默认模型: {default_model}")
 
-    session_id, messages = session_menu()
-    if not session_id:
-        return
-
+    # 默认新建会话
+    session_id = generate_session_id()
     agent = FileAgent(provider)
-    if messages:
-        agent.messages = messages
 
-    print(f"\n会话 ID: {session_id}")
-    print("输入 'quit' 或 'exit' 退出，'save' 保存会话")
-    print()
-
-    last_usage = agent.get_token_usage()
+    print(f"\n新会话已创建，ID: {session_id}")
+    _print_help()
 
     while True:
         try:
             user_input = input("你: ").strip()
 
-            if user_input.lower() in ["quit", "exit", "退出"]:
-                save_session(session_id, agent.messages)
-                usage = agent.get_token_usage()
-                print(f"\n本次会话 Token 统计:")
-                print(f"  输入: {usage['input']}")
-                print(f"  输出: {usage['output']}")
-                print(f"  总计: {usage['total']}")
-                print("\n会话已保存，再见!")
-                break
-            if user_input.lower() == "save":
-                save_session(session_id, agent.messages)
-                print("会话已保存!")
-                continue
             if not user_input:
                 continue
 
+            # 斜杠命令解析
+            if user_input.startswith("/"):
+                cmd = user_input[1:].lower()
+
+                if cmd in ["quit", "exit", "q"]:
+                    _save_and_exit(session_id, agent)
+                    break
+                elif cmd == "save":
+                    save_session(session_id, agent.messages)
+                    print("会话已保存!")
+                    continue
+                elif cmd == "history":
+                    sid, msgs = _cmd_history(agent)
+                    if sid and msgs is not None:
+                        session_id = sid
+                        agent.messages = msgs
+                    continue
+                elif cmd == "logs":
+                    _cmd_logs()
+                    continue
+                elif cmd == "model":
+                    new_provider = select_model()
+                    if new_provider:
+                        agent.llm = new_provider
+                        print("模型已切换!")
+                    continue
+                elif cmd == "help":
+                    _print_help()
+                    continue
+                else:
+                    print(f"未知命令: {user_input}")
+                    print("输入 /help 查看可用命令")
+                    continue
+
+            # 普通对话
             before = time.time()
             before_usage = agent.get_token_usage()
             response = agent.process(user_input)
             elapsed = time.time() - before
             after_usage = agent.get_token_usage()
 
-            delta_in = after_usage["input"] - before_usage["input"]
-            delta_out = after_usage["output"] - before_usage["output"]
-            delta_total = after_usage["total"] - before_usage["total"]
-
             print(f"助手: {response}")
-            print(f"  [{elapsed:.2f}s | 本次 Token 输入:{delta_in} 输出:{delta_out} 总计:{delta_total} | 累计:{after_usage['total']}]")
-            print()
+            _print_stats(elapsed, before_usage, after_usage)
 
             # 自动保存会话
             save_session(session_id, agent.messages)
 
         except KeyboardInterrupt:
-            save_session(session_id, agent.messages)
-            usage = agent.get_token_usage()
-            print(f"\n本次会话 Token 统计:")
-            print(f"  输入: {usage['input']}")
-            print(f"  输出: {usage['output']}")
-            print(f"  总计: {usage['total']}")
-            print("\n会话已保存，再见!")
+            _save_and_exit(session_id, agent)
             break
         except Exception as e:
             print(f"发生错误: {e}")
