@@ -258,6 +258,84 @@ def list_files(path="."):
         return {"success": False, "error": str(e)}
 
 
+def _human_size(size_bytes):
+    """将字节数转为人类可读字符串"""
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(size_bytes)
+    for unit in units:
+        if abs(size) < 1024.0:
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+    return f"{size:.2f} PB"
+
+
+def scan_disk(path=".", max_depth=None, max_results=None, min_size=0):
+    """扫描目录并统计各子文件夹大小,返回按大小降序排列的结果"""
+    dir_path = Path(path)
+
+    if not dir_path.exists():
+        return {"success": False, "error": f"路径不存在: {path}"}
+
+    cfg = get_config()
+    max_depth = int(max_depth if max_depth is not None else cfg.get("max_search_depth", 10))
+    max_results = int(max_results if max_results is not None else cfg.get("max_search_results", 100))
+    min_size = int(min_size)
+
+    base = str(dir_path.resolve())
+    base_depth = len(dir_path.resolve().parts)
+    sizes = {}
+
+    try:
+        for root, dirs, files in os.walk(base):
+            cur_depth = len(Path(root).resolve().parts) - base_depth
+            if cur_depth >= max_depth:
+                dirs[:] = []
+                continue
+
+            root_size = 0
+            for f in files:
+                fp = os.path.join(root, f)
+                try:
+                    root_size += os.path.getsize(fp)
+                except Exception:
+                    pass
+
+            sizes[root] = sizes.get(root, 0) + root_size
+
+            # 将当前目录大小累加到所有祖先目录
+            parent = root
+            while True:
+                parent = os.path.dirname(parent)
+                if not parent or len(parent) < len(base):
+                    break
+                sizes[parent] = sizes.get(parent, 0) + root_size
+
+        items = [
+            {
+                "path": p,
+                "size_bytes": s,
+                "size_human": _human_size(s),
+            }
+            for p, s in sizes.items()
+            if s >= min_size
+        ]
+        items.sort(key=lambda x: x["size_bytes"], reverse=True)
+
+        truncated = len(items) > max_results
+        if truncated:
+            items = items[:max_results]
+
+        return {
+            "success": True,
+            "path": path,
+            "items": items,
+            "truncated": truncated,
+            "count": len(items),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 TOOL_REGISTRY = {
     "move_file": move_file,
     "copy_file": copy_file,
@@ -269,6 +347,7 @@ TOOL_REGISTRY = {
     "rename_file": rename_file,
     "search_files": search_files,
     "list_files": list_files,
+    "scan_disk": scan_disk,
 }
 
 
@@ -387,6 +466,19 @@ TOOL_SCHEMAS = [
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "目录路径，默认为当前目录"}
+            }
+        }
+    },
+    {
+        "name": "scan_disk",
+        "description": "扫描目录并统计各子文件夹大小，返回按大小降序排列的结果",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "扫描起始目录，默认为当前目录"},
+                "max_depth": {"type": "integer", "description": "最大递归深度，默认读取配置 max_search_depth"},
+                "max_results": {"type": "integer", "description": "返回结果最大数量，默认读取配置 max_search_results"},
+                "min_size": {"type": "integer", "description": "最小字节数过滤，默认 0"}
             }
         }
     }

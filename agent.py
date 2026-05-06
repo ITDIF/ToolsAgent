@@ -145,6 +145,9 @@ class FileAgent:
         elif tool_name == "list_files":
             path = args.get("path", ".")
             return f"列出 {path} 的文件"
+        elif tool_name == "scan_disk":
+            path = args.get("path", ".")
+            return f"扫描 {path} 的磁盘占用"
         else:
             return f"{tool_name} {args}"
 
