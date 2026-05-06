@@ -7,6 +7,8 @@ class BaseLLMProvider(ABC):
 
     def __init__(self):
         self.token_usage = {"input": 0, "output": 0, "total": 0}
+        self.max_retries = 3
+        self.timeout = 60.0
 
     def reset_token_usage(self):
         """重置 token 计数"""
@@ -21,6 +23,41 @@ class BaseLLMProvider(ABC):
         self.token_usage["input"] += input_tokens
         self.token_usage["output"] += output_tokens
         self.token_usage["total"] += input_tokens + output_tokens
+
+    def build_assistant_message(self, content, tool_calls):
+        """构造一轮 assistant 消息(默认 OpenAI 风格)。返回应 extend 到对话历史的消息列表。"""
+        msg = {"role": "assistant", "content": content or None}
+        if tool_calls:
+            msg["tool_calls"] = [
+                {
+                    "id": tc["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tc["name"],
+                        "arguments": json.dumps(tc["arguments"], ensure_ascii=False),
+                    },
+                }
+                for tc in tool_calls
+            ]
+        return [msg]
+
+    def build_tool_result_messages(self, tool_results):
+        """
+        构造工具结果消息(默认 OpenAI 风格)。
+
+        Args:
+            tool_results: [(tool_call_dict, result_dict), ...]
+        Returns:
+            list of message dicts to extend into history
+        """
+        return [
+            {
+                "role": "tool",
+                "tool_call_id": tc["id"],
+                "content": json.dumps(result, ensure_ascii=False),
+            }
+            for tc, result in tool_results
+        ]
 
     @abstractmethod
     def chat_with_tools(
@@ -76,7 +113,7 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         super().__init__()
         self.api_key = api_key
         self.model = model
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = OpenAI(api_key=api_key, base_url=base_url, max_retries=self.max_retries, timeout=self.timeout)
 
     def chat_with_tools(self, messages, tools, system_prompt=None, **kwargs):
         openai_tools = [

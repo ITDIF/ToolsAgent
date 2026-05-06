@@ -3,6 +3,20 @@ import os
 import shutil
 from pathlib import Path
 
+from path_safety import assert_safe_write_path, PathSafetyError
+from config import get_config
+
+
+def _safety_check(*paths):
+    """对一组待写入路径做安全校验,通过返回 None,失败返回标准错误响应"""
+    cfg = get_config()
+    for p in paths:
+        try:
+            assert_safe_write_path(p, cfg)
+        except PathSafetyError as e:
+            return {"success": False, "error": str(e)}
+    return None
+
 
 def move_file(src, dst):
     """移动文件或文件夹"""
@@ -11,6 +25,10 @@ def move_file(src, dst):
 
     if not src_path.exists():
         return {"success": False, "error": f"源路径不存在: {src}"}
+
+    err = _safety_check(src, dst)
+    if err:
+        return err
 
     try:
         shutil.move(str(src_path), str(dst_path))
@@ -26,6 +44,10 @@ def copy_file(src, dst):
 
     if not src_path.exists():
         return {"success": False, "error": f"源路径不存在: {src}"}
+
+    err = _safety_check(dst)
+    if err:
+        return err
 
     try:
         if src_path.is_file():
@@ -44,6 +66,10 @@ def delete_file(path):
     if not file_path.exists():
         return {"success": False, "error": f"路径不存在: {path}"}
 
+    err = _safety_check(path)
+    if err:
+        return err
+
     try:
         if file_path.is_file():
             file_path.unlink()
@@ -58,6 +84,10 @@ def create_folder(path):
     """创建文件夹"""
     folder_path = Path(path)
 
+    err = _safety_check(path)
+    if err:
+        return err
+
     try:
         folder_path.mkdir(parents=True, exist_ok=True)
         return {"success": True, "message": f"已创建文件夹: {path}"}
@@ -68,6 +98,10 @@ def create_folder(path):
 def create_file(path, content=""):
     """创建文件，可指定内容"""
     file_path = Path(path)
+
+    err = _safety_check(path)
+    if err:
+        return err
 
     try:
         # 确保父目录存在
@@ -88,9 +122,22 @@ def read_file(path):
     if not file_path.is_file():
         return {"success": False, "error": f"路径不是文件: {path}"}
 
+    cfg = get_config()
+    max_bytes = int(cfg.get("max_read_bytes", 1024 * 1024))
+
     try:
-        content = file_path.read_text(encoding="utf-8")
-        return {"success": True, "path": path, "content": content}
+        size = file_path.stat().st_size
+        with open(file_path, "rb") as f:
+            data = f.read(max_bytes)
+        content = data.decode("utf-8", errors="replace")
+        return {
+            "success": True,
+            "path": path,
+            "content": content,
+            "truncated": size > max_bytes,
+            "bytes_read": len(data),
+            "total_bytes": size,
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -98,6 +145,10 @@ def read_file(path):
 def write_file(path, content, append=False):
     """写入文件内容，支持覆盖或追加"""
     file_path = Path(path)
+
+    err = _safety_check(path)
+    if err:
+        return err
 
     try:
         # 确保父目录存在
@@ -122,6 +173,10 @@ def rename_file(src, dst):
     if not src_path.exists():
         return {"success": False, "error": f"源路径不存在: {src}"}
 
+    err = _safety_check(src, dst)
+    if err:
+        return err
+
     try:
         src_path.rename(dst_path)
         return {"success": True, "message": f"已重命名: {src} -> {dst}"}
@@ -136,23 +191,49 @@ def search_files(path, pattern, search_type="all"):
     if not dir_path.exists():
         return {"success": False, "error": f"路径不存在: {path}"}
 
+    cfg = get_config()
+    max_results = int(cfg.get("max_search_results", 100))
+    max_depth = int(cfg.get("max_search_depth", 10))
+    base_depth = len(dir_path.resolve().parts)
+
     try:
         results = []
-        # 遍历目录
-        for item in dir_path.rglob("*"):
-            # 根据类型过滤
-            if search_type == "file" and not item.is_file():
-                continue
-            if search_type == "folder" and not item.is_dir():
-                continue
-            # 匹配模式
-            if pattern.lower() in item.name.lower():
-                results.append({
-                    "name": item.name,
-                    "type": "folder" if item.is_dir() else "file",
-                    "path": str(item)
-                })
-        return {"success": True, "results": results, "path": path, "pattern": pattern}
+        truncated = False
+        pattern_lower = pattern.lower()
+
+        for root, dirs, files in os.walk(dir_path):
+            cur_depth = len(Path(root).resolve().parts) - base_depth
+            if cur_depth >= max_depth:
+                # 达到深度上限,不再继续向下
+                dirs[:] = []
+
+            candidates = []
+            if search_type in ("all", "folder"):
+                candidates.extend((d, True) for d in dirs)
+            if search_type in ("all", "file"):
+                candidates.extend((f, False) for f in files)
+
+            for name, is_dir in candidates:
+                if pattern_lower in name.lower():
+                    results.append({
+                        "name": name,
+                        "type": "folder" if is_dir else "file",
+                        "path": str(Path(root) / name)
+                    })
+                    if len(results) >= max_results:
+                        truncated = True
+                        break
+            if truncated:
+                break
+
+        return {
+            "success": True,
+            "results": results,
+            "path": path,
+            "pattern": pattern,
+            "truncated": truncated,
+            "max_results": max_results,
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 

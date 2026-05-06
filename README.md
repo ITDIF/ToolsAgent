@@ -101,8 +101,12 @@ python main.py
   "default_model": "mimo-v2.5",
   "log_retention_days": 30,
   "max_search_results": 100,
+  "max_search_depth": 10,
+  "max_tool_iterations": 8,
+  "max_read_bytes": 1048576,
   "confirm_delete": true,
-  "confirm_overwrite": true
+  "confirm_overwrite": true,
+  "allowed_roots": []
 }
 ```
 
@@ -110,10 +114,14 @@ python main.py
 |------|--------|------|
 | `tool_timeout` | 30 | 工具执行超时时间（秒） |
 | `default_model` | mimo-v2.5 | 默认模型 |
-| `log_retention_days` | 30 | 日志保留天数 |
-| `max_search_results` | 100 | 搜索结果最大数量 |
+| `log_retention_days` | 30 | 日志保留天数（启动时清理） |
+| `max_search_results` | 100 | 搜索结果最大数量，触顶返回 `truncated:true` |
+| `max_search_depth` | 10 | 搜索递归最大目录深度 |
+| `max_tool_iterations` | 8 | 单次请求允许的最大工具调用轮次 |
+| `max_read_bytes` | 1048576 | 读文件最大字节数（默认 1MB），超出截断并标记 |
 | `confirm_delete` | true | 删除前是否确认 |
 | `confirm_overwrite` | true | 覆盖写入前是否确认 |
+| `allowed_roots` | [] | 写操作白名单根目录列表；为空时启用系统目录黑名单 |
 
 ## 数据存储位置
 
@@ -155,10 +163,11 @@ class MyProvider(OpenAICompatibleProvider):
 ```
 ToolsAgent/
 ├── main.py                    # CLI 入口
-├── agent.py                   # Agent 协调层
+├── agent.py                   # Agent 协调层（多轮工具循环）
 ├── config.py                  # 配置管理
-├── file_ops.py                # 文件操作工具
-├── utils.py                   # 工具函数（日志）
+├── file_ops.py                # 文件操作工具（写操作走路径沙箱）
+├── path_safety.py             # 路径安全校验（黑/白名单）
+├── utils.py                   # 工具函数（日志写入与清理）
 ├── session.py                 # 会话管理
 ├── requirements.txt           # 依赖
 ├── .env                       # 环境变量
@@ -167,11 +176,12 @@ ToolsAgent/
 ├── tests/                     # 单元测试
 │   ├── test_file_ops.py       # 文件操作测试
 │   ├── test_session.py        # 会话管理测试
+│   ├── test_token.py          # Token 计数测试
 │   └── test_utils.py          # 工具函数测试
 └── providers/
     ├── __init__.py            # 导出
-    ├── base.py                # 抽象基类 + OpenAI 兼容基类
-    ├── claude.py              # Claude 实现
+    ├── base.py                # 抽象基类 + OpenAI 兼容基类（含消息格式化）
+    ├── claude.py              # Claude 实现（Anthropic 原生 block 格式）
     ├── kimi.py                # Kimi 实现
     ├── doubao.py              # 豆包 实现
     ├── glm.py                 # GLM 实现

@@ -3,7 +3,10 @@ import json
 import random
 import string
 import datetime
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def get_session_dir():
@@ -27,7 +30,8 @@ def save_session(session_id, messages):
         with open(session_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         return True
-    except Exception:
+    except Exception as e:
+        logger.warning("save_session(%s) failed: %s", session_id, e)
         return False
 
 
@@ -43,7 +47,8 @@ def load_session(session_id):
         with open(session_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data.get("messages", [])
-    except Exception:
+    except Exception as e:
+        logger.warning("load_session(%s) failed: %s", session_id, e)
         return None
 
 
@@ -62,12 +67,13 @@ def list_sessions():
                     "updated_at": data.get("updated_at", ""),
                     "message_count": len(data.get("messages", []))
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("skip session file %s: %s", session_file, e)
         # 按时间排序，最新的在前
         sessions.sort(key=lambda x: x["updated_at"], reverse=True)
         return sessions
-    except Exception:
+    except Exception as e:
+        logger.warning("list_sessions failed: %s", e)
         return []
 
 

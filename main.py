@@ -12,162 +12,141 @@ if sys.platform == 'win32':
 from providers import ClaudeProvider, KimiProvider, DoubaoProvider, GlmProvider, XiaomiProvider
 from agent import FileAgent
 from session import generate_session_id, save_session, load_session, list_sessions
-from utils import get_recent_logs
+from utils import get_recent_logs, cleanup_old_logs
 from config import get_config
 
 
-# 模型名称到 Provider 的映射
+# 模型 Provider 注册表(主键即菜单顺序)
 MODEL_PROVIDERS = {
     "claude": {
         "class": ClaudeProvider,
         "env_key": "ANTHROPIC_API_KEY",
-        "default_model": "claude-3-5-sonnet-20241022",
-        "name": "Claude (Anthropic)"
-    },
-    "moonshot": {
-        "class": KimiProvider,
-        "env_key": "KIMI_API_KEY",
-        "default_model": "moonshot-v1-8k",
-        "name": "Kimi (月之暗面)"
+        "default_model": "claude-sonnet-4-6",
+        "name": "Claude (Anthropic)",
+        "aliases": [],
+        "needs_endpoint": False,
+        "base_url_env": None,
+        "base_url_default": None,
     },
     "kimi": {
         "class": KimiProvider,
         "env_key": "KIMI_API_KEY",
         "default_model": "moonshot-v1-8k",
-        "name": "Kimi (月之暗面)"
+        "name": "Kimi (月之暗面)",
+        "aliases": ["moonshot"],
+        "needs_endpoint": False,
+        "base_url_env": None,
+        "base_url_default": None,
     },
     "doubao": {
         "class": DoubaoProvider,
         "env_key": "DOUBAO_API_KEY",
-        "default_model": "",  # 豆包需要手动输入 Endpoint ID
-        "name": "豆包 (字节跳动)"
+        "default_model": "",
+        "name": "豆包 (字节跳动)",
+        "aliases": [],
+        "needs_endpoint": True,
+        "base_url_env": "DOUBAO_BASE_URL",
+        "base_url_default": "https://ark.cn-beijing.volces.com/api/v3",
     },
     "glm": {
         "class": GlmProvider,
         "env_key": "GLM_API_KEY",
         "default_model": "glm-4",
-        "name": "GLM (智谱 AI)"
+        "name": "GLM (智谱 AI)",
+        "aliases": [],
+        "needs_endpoint": False,
+        "base_url_env": None,
+        "base_url_default": None,
     },
     "xiaomi": {
         "class": XiaomiProvider,
         "env_key": "XIAOMI_API_KEY",
         "default_model": "mimo-v2.5",
-        "name": "小米 (MIMO)"
-    },
-    "mimo": {
-        "class": XiaomiProvider,
-        "env_key": "XIAOMI_API_KEY",
-        "default_model": "mimo-v2.5",
-        "name": "小米 (MIMO)"
+        "name": "小米 (MIMO)",
+        "aliases": ["mimo"],
+        "needs_endpoint": False,
+        "base_url_env": "XIAOMI_BASE_URL",
+        "base_url_default": "https://api.mimo.ai/v1",
     },
 }
 
 
-def create_provider(model_name):
-    """
-    根据模型名称创建对应的 Provider
+def _match_provider_key(model_name):
+    """根据模型名前缀匹配 provider key,匹配主键或别名都返回主键"""
+    name = (model_name or "").lower()
+    for key, info in MODEL_PROVIDERS.items():
+        if name.startswith(key):
+            return key
+        for alias in info.get("aliases", []):
+            if name.startswith(alias):
+                return key
+    return None
 
-    Args:
-        model_name: 模型名称，如 "claude", "moonshot-v1-8k", "mimo-v2.5"
 
-    Returns:
-        Provider 实例，如果创建失败返回 None
-    """
-    # 查找匹配的 provider
-    provider_key = None
-    for key in MODEL_PROVIDERS:
-        if model_name.lower().startswith(key):
-            provider_key = key
-            break
-
-    if not provider_key:
-        print(f"未知的模型: {model_name}")
-        return None
-
-    provider_config = MODEL_PROVIDERS[provider_key]
-    api_key = os.getenv(provider_config["env_key"])
-
+def _build_provider(provider_key, model_name):
+    """通用构造函数,屏蔽各 provider 的差异"""
+    info = MODEL_PROVIDERS[provider_key]
+    api_key = os.getenv(info["env_key"])
     if not api_key:
-        print(f"未设置环境变量: {provider_config['env_key']}")
+        print(f"未设置环境变量: {info['env_key']}")
         return None
-
+    kwargs = {"api_key": api_key, "model": model_name}
+    if info["base_url_env"]:
+        kwargs["base_url"] = os.getenv(info["base_url_env"], info["base_url_default"])
     try:
-        if provider_key in ["doubao"]:
-            # 豆包需要手动输入 Endpoint ID
-            endpoint_id = input(f"请输入豆包接入点 ID (Endpoint ID): ").strip()
-            if not endpoint_id:
-                print("必须输入豆包接入点 ID")
-                return None
-            base_url = os.getenv("DOUBAO_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
-            return provider_config["class"](api_key=api_key, model=endpoint_id, base_url=base_url)
-        elif provider_key in ["xiaomi", "mimo"]:
-            base_url = os.getenv("XIAOMI_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1")
-            return provider_config["class"](api_key=api_key, model=model_name, base_url=base_url)
-        else:
-            return provider_config["class"](api_key=api_key, model=model_name)
+        return info["class"](**kwargs)
     except Exception as e:
         print(f"创建 Provider 失败: {e}")
         return None
 
 
+def create_provider(model_name):
+    """根据完整模型名创建 Provider(用于配置文件中的 default_model)"""
+    key = _match_provider_key(model_name)
+    if not key:
+        print(f"未知的模型: {model_name}")
+        return None
+    info = MODEL_PROVIDERS[key]
+    if info["needs_endpoint"]:
+        endpoint = input(f"请输入{info['name']}接入点 ID: ").strip()
+        if not endpoint:
+            print("必须输入接入点 ID")
+            return None
+        return _build_provider(key, endpoint)
+    return _build_provider(key, model_name)
+
+
 def select_model():
-    """选择模型选择"""
+    """从菜单交互选择模型"""
+    keys = list(MODEL_PROVIDERS.keys())
     print("请选择模型:")
-    print("1. Claude (Anthropic)")
-    print("2. Kimi (月之暗面)")
-    print("3. 豆包 (字节跳动)")
-    print("4. GLM (智谱 AI)")
-    print("5. 小米 (MIMO)")
-
-    choice = input("请输入选项 (1-5): ").strip()
-
-    if choice == "1":
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            print("请先在 .env 文件中设置 ANTHROPIC_API_KEY")
-            return None
-        model = input("请输入模型名称 (默认 claude-3-5-sonnet-20241022): ").strip()
-        model = model or "claude-3-5-sonnet-20241022"
-        return ClaudeProvider(api_key=api_key, model=model)
-    elif choice == "2":
-        api_key = os.getenv("KIMI_API_KEY")
-        if not api_key:
-            print("请先在 .env 文件中设置 KIMI_API_KEY")
-            return None
-        model = input("请输入模型名称 (默认 moonshot-v1-8k): ").strip()
-        model = model or "moonshot-v1-8k"
-        return KimiProvider(api_key=api_key, model=model)
-    elif choice == "3":
-        api_key = os.getenv("DOUBAO_API_KEY")
-        if not api_key:
-            print("请先在 .env 文件中设置 DOUBAO_API_KEY")
-            return None
-        model = input("请输入模型接入点 ID (Endpoint ID): ").strip()
-        if not model:
-            print("请输入豆包接入点 ID")
-            return None
-        base_url = os.getenv("DOUBAO_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
-        return DoubaoProvider(api_key=api_key, model=model, base_url=base_url)
-    elif choice == "4":
-        api_key = os.getenv("GLM_API_KEY")
-        if not api_key:
-            print("请先在 .env 文件中设置 GLM_API_KEY")
-            return None
-        model = input("请输入模型名称 (默认 glm-4): ").strip()
-        model = model or "glm-4"
-        return GlmProvider(api_key=api_key, model=model)
-    elif choice == "5":
-        api_key = os.getenv("XIAOMI_API_KEY")
-        if not api_key:
-            print("请先在 .env 文件中设置 XIAOMI_API_KEY")
-            return None
-        model = input("请输入模型名称 (默认 mimo-v2.5): ").strip()
-        model = model or "mimo-v2.5"
-        base_url = os.getenv("XIAOMI_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1")
-        return XiaomiProvider(api_key=api_key, model=model, base_url=base_url)
-    else:
+    for i, k in enumerate(keys, 1):
+        print(f"{i}. {MODEL_PROVIDERS[k]['name']}")
+    choice = input(f"请输入选项 (1-{len(keys)}): ").strip()
+    try:
+        idx = int(choice) - 1
+    except ValueError:
+        print("无效输入")
+        return None
+    if not 0 <= idx < len(keys):
         print("无效选项")
         return None
+
+    key = keys[idx]
+    info = MODEL_PROVIDERS[key]
+    if info["needs_endpoint"]:
+        endpoint = input(f"请输入{info['name']}接入点 ID: ").strip()
+        if not endpoint:
+            print("必须输入接入点 ID")
+            return None
+        return _build_provider(key, endpoint)
+    default = info["default_model"]
+    prompt = f"请输入模型名称 (默认 {default}): " if default else "请输入模型名称: "
+    model = input(prompt).strip() or default
+    if not model:
+        print("必须输入模型名称")
+        return None
+    return _build_provider(key, model)
 
 
 def session_menu():
@@ -229,6 +208,9 @@ def main():
     # 检查是否有默认模型配置
     config = get_config()
     default_model = config.get("default_model", "mimo-v2.5")
+
+    # 启动时清理过期日志
+    cleanup_old_logs(config.get("log_retention_days", 30))
 
     # 尝试使用默认模型
     provider = create_provider(default_model)

@@ -1,15 +1,50 @@
 
 import json
 import datetime
+import re
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+LOG_FILENAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.jsonl$")
+
+
+def get_log_dir():
+    """获取日志目录"""
+    log_dir = Path.home() / ".toolsagent" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
 
 
 def get_log_path():
     """获取日志文件路径"""
-    log_dir = Path.home() / ".toolsagent" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
     date_str = datetime.datetime.now().strftime("%Y-%m-%d")
-    return log_dir / f"{date_str}.jsonl"
+    return get_log_dir() / f"{date_str}.jsonl"
+
+
+def cleanup_old_logs(retention_days):
+    """删除超过保留天数的日志文件"""
+    if not retention_days or retention_days <= 0:
+        return 0
+    cutoff = datetime.date.today() - datetime.timedelta(days=int(retention_days))
+    log_dir = get_log_dir()
+    removed = 0
+    for f in log_dir.iterdir():
+        m = LOG_FILENAME_RE.match(f.name)
+        if not m:
+            continue
+        try:
+            file_date = datetime.date.fromisoformat(m.group(1))
+        except ValueError:
+            continue
+        if file_date < cutoff:
+            try:
+                f.unlink()
+                removed += 1
+            except Exception as e:
+                logger.warning("failed to remove old log %s: %s", f, e)
+    return removed
 
 
 def log_action(action_type, params, result):
@@ -26,8 +61,8 @@ def log_action(action_type, params, result):
     try:
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
-    except Exception:
-        pass  # 静默失败，不影响主流程
+    except Exception as e:
+        logger.warning("log_action(%s) failed: %s", action_type, e)
 
 
 def get_recent_logs(limit=10):
@@ -66,6 +101,7 @@ def get_recent_logs(limit=10):
                             break
 
         return logs
-    except Exception:
+    except Exception as e:
+        logger.warning("get_recent_logs failed: %s", e)
         return []
 
