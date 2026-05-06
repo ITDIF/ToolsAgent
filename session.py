@@ -1,7 +1,6 @@
 
 import json
-import random
-import string
+import time
 import datetime
 import logging
 from pathlib import Path
@@ -89,8 +88,7 @@ def delete_session(session_id):
 
 
 def generate_session_id():
-    """生成会话 ID（时间戳 + 4位随机后缀，避免同秒冲突）"""
+    """生成会话 ID（时间戳 + 性能计数器后缀，保证唯一性）"""
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    suffix = ''.join(random.choices(string.digits, k=4))
-    return f"{ts}_{suffix}"
+    return f"{ts}_{time.perf_counter_ns()}"
 

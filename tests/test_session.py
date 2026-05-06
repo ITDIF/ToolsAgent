@@ -32,7 +32,7 @@ class TestGenerateSessionId:
         assert len(parts) == 3
         assert len(parts[0]) == 8  # YYYYMMDD
         assert len(parts[1]) == 6  # HHMMSS
-        assert len(parts[2]) == 4  # random suffix
+        assert parts[2].isdigit() and len(parts[2]) >= 10  # 纳秒后缀
 
 
 class TestSaveLoadSession:

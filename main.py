@@ -2,6 +2,7 @@
 import os
 import sys
 import io
+import time
 from dotenv import load_dotenv
 
 # 在 Windows 上设置标准输出为 UTF-8 以正确显示中文
@@ -237,6 +238,8 @@ def main():
     print("输入 'quit' 或 'exit' 退出，'save' 保存会话")
     print()
 
+    last_usage = agent.get_token_usage()
+
     while True:
         try:
             user_input = input("你: ").strip()
@@ -257,8 +260,18 @@ def main():
             if not user_input:
                 continue
 
+            before = time.time()
+            before_usage = agent.get_token_usage()
             response = agent.process(user_input)
+            elapsed = time.time() - before
+            after_usage = agent.get_token_usage()
+
+            delta_in = after_usage["input"] - before_usage["input"]
+            delta_out = after_usage["output"] - before_usage["output"]
+            delta_total = after_usage["total"] - before_usage["total"]
+
             print(f"助手: {response}")
+            print(f"  [{elapsed:.2f}s | 本次 Token 输入:{delta_in} 输出:{delta_out} 总计:{delta_total} | 累计:{after_usage['total']}]")
             print()
 
             # 自动保存会话
