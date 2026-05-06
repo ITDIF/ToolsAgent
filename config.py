@@ -12,6 +12,7 @@ DEFAULT_CONFIG = {
     "max_search_results": 100,
     "max_search_depth": 10,
     "max_tool_iterations": 8,
+    "max_request_time": 300,
     "max_read_bytes": 1024 * 1024,
     "confirm_delete": True,
     "confirm_overwrite": True,

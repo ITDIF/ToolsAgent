@@ -1,4 +1,6 @@
 
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -63,7 +65,7 @@ def _is_drive_root(path: Path) -> bool:
     if sys.platform != "win32":
         return str(path) == "/"
     s = str(path)
-    return len(s) <= 3 and s.endswith(("\\", ":\\")) or s.lower() in {"c:\\", "d:\\", "e:\\", "f:\\"}
+    return bool(re.match(r"^[a-zA-Z]:[/\\]?$", s))
 
 
 def assert_safe_write_path(path, config=None):
@@ -71,12 +73,16 @@ def assert_safe_write_path(path, config=None):
     校验路径是否允许写入(创建/修改/删除)。
 
     规则:
+    - 拒绝符号链接(避免解析后绕过沙箱)
     - 若 config.allowed_roots 非空: 只允许在白名单目录内
     - 否则: 只要不落在 blocked_roots/盘符根 即可
 
     Raises:
         PathSafetyError: 校验不通过时
     """
+    if os.path.islink(path):
+        raise PathSafetyError(f"禁止操作符号链接: {path}")
+
     target = _resolve(path)
     cfg = config or {}
 

@@ -5,7 +5,7 @@ import pytest
 
 from file_ops import (
     move_file, copy_file, delete_file, create_folder, create_file,
-    read_file, write_file, rename_file, search_files, list_files
+    read_file, write_file, rename_file, search_files, list_files, scan_disk
 )
 
 
@@ -169,4 +169,66 @@ class TestListFiles:
 
     def test_list_nonexistent(self):
         result = list_files("/nonexistent/dir")
+        assert result["success"] is False
+
+
+class TestScanDisk:
+    def test_empty_dir(self, tmp_dir):
+        result = scan_disk(tmp_dir)
+        assert result["success"] is True
+        assert result["count"] >= 1  # 至少包含自身
+
+    def test_nested_sizes(self, tmp_dir):
+        # dir_a: 100B, dir_b: 200B
+        for name, size in [("dir_a", 100), ("dir_b", 200)]:
+            d = os.path.join(tmp_dir, name)
+            os.makedirs(d)
+            with open(os.path.join(d, "file.txt"), "w") as f:
+                f.write("x" * size)
+        result = scan_disk(tmp_dir)
+        assert result["success"] is True
+        names = {item["path"]: item["size_bytes"] for item in result["items"]}
+        assert names[os.path.join(tmp_dir, "dir_b")] == 200
+        assert names[os.path.join(tmp_dir, "dir_a")] == 100
+        # 根目录总大小 = 300
+        assert names[tmp_dir] == 300
+
+    def test_max_depth(self, tmp_dir):
+        deep = os.path.join(tmp_dir, "a", "b", "c")
+        os.makedirs(deep)
+        with open(os.path.join(deep, "deep.txt"), "w") as f:
+            f.write("x")
+        result = scan_disk(tmp_dir, max_depth=2)
+        assert result["success"] is True
+        paths = [item["path"] for item in result["items"]]
+        assert deep not in paths
+
+    def test_max_results(self, tmp_dir):
+        for i in range(20):
+            d = os.path.join(tmp_dir, f"dir_{i}")
+            os.makedirs(d)
+            with open(os.path.join(d, "f.txt"), "w") as f:
+                f.write("x")
+        result = scan_disk(tmp_dir, max_results=5)
+        assert result["success"] is True
+        assert result["truncated"] is True
+        assert result["count"] == 5
+
+    def test_min_size(self, tmp_dir):
+        d1 = os.path.join(tmp_dir, "small")
+        d2 = os.path.join(tmp_dir, "large")
+        os.makedirs(d1)
+        os.makedirs(d2)
+        with open(os.path.join(d1, "a.txt"), "w") as f:
+            f.write("x" * 10)
+        with open(os.path.join(d2, "b.txt"), "w") as f:
+            f.write("x" * 1000)
+        result = scan_disk(tmp_dir, min_size=500)
+        assert result["success"] is True
+        names = {item["path"] for item in result["items"]}
+        assert os.path.join(tmp_dir, "small") not in names
+        assert os.path.join(tmp_dir, "large") in names
+
+    def test_nonexistent(self):
+        result = scan_disk("/nonexistent/scan")
         assert result["success"] is False

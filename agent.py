@@ -1,5 +1,6 @@
 
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from file_ops import TOOL_REGISTRY, TOOL_SCHEMAS
 from utils import log_action
@@ -19,6 +20,7 @@ SYSTEM_PROMPT = """你是一个本地文件操作助手。你可以帮助用户�
 - 重命名文件/文件夹
 - 搜索文件/文件夹
 - 列出文件
+- 扫描磁盘占用（统计各文件夹大小）
 
 请先理解用户的意图，然后选择合适的工具执行操作。执行危险操作（如删除、覆盖写入）前，请确保用户明确确认。如果完成用户的请求需要多步工具操作，请逐步进行，每一步根据上一步结果决定下一步动作。"""
 
@@ -87,8 +89,15 @@ class FileAgent:
         """处理用户输入,支持多轮工具调用直到模型给出最终回复"""
         self.messages.append({"role": "user", "content": user_input})
         max_iterations = int(self.config.get("max_tool_iterations", 8))
+        max_time = float(self.config.get("max_request_time", 300))
+        start_time = time.time()
 
         for _ in range(max_iterations):
+            if time.time() - start_time > max_time:
+                msg = "请求处理时间过长，已中断。请简化需求后重试。"
+                self.messages.append({"role": "assistant", "content": msg})
+                return msg
+
             response = self.llm.chat_with_tools(
                 messages=self.messages,
                 tools=TOOL_SCHEMAS,
