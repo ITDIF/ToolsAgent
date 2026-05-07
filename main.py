@@ -18,6 +18,17 @@ from config import get_config
 from file_ops import cleanup_old_backups
 
 
+class _C:
+    """终端颜色代码"""
+    GREEN = "\033[32m"
+    RED = "\033[31m"
+    YELLOW = "\033[33m"
+    GRAY = "\033[90m"
+    DIM = "\033[2m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+
+
 # 模型 Provider 注册表(主键即菜单顺序)
 MODEL_PROVIDERS = {
     "claude": {
@@ -155,12 +166,12 @@ def _cmd_history(agent):
     """加载历史会话"""
     sessions = list_sessions()
     if not sessions:
-        print("没有历史会话")
+        print(f"{_C.GRAY}没有历史会话{_C.RESET}")
         return None, None
-    print("\n历史会话:")
+    print(f"{_C.GRAY}历史会话:{_C.RESET}")
     for i, s in enumerate(sessions, 1):
-        print(f"{i}. {s['id']} ({s['message_count']}条消息, 更新于{s['updated_at']})")
-    idx = input("\n选择会话编号(回车取消): ").strip()
+        print(f"  {i}. {s['id']} ({s['message_count']}条消息, {s['updated_at']})")
+    idx = input(f"{_C.GREEN}> {_C.RESET}").strip()
     if not idx:
         return None, None
     try:
@@ -169,16 +180,16 @@ def _cmd_history(agent):
             sid = sessions[idx]['id']
             msgs = load_session(sid)
             if msgs is not None:
-                print(f"已加载会话: {sid}")
+                print(f"{_C.GRAY}已加载会话: {sid}{_C.RESET}")
                 return sid, msgs
             else:
-                print("加载失败")
+                print(f"{_C.RED}加载失败{_C.RESET}")
                 return None, None
         else:
-            print("无效选项")
+            print(f"{_C.RED}无效选项{_C.RESET}")
             return None, None
     except ValueError:
-        print("无效输入")
+        print(f"{_C.RED}无效输入{_C.RESET}")
         return None, None
 
 
@@ -186,55 +197,46 @@ def _cmd_logs():
     """查看操作日志"""
     logs = get_recent_logs(20)
     if not logs:
-        print("没有操作记录")
+        print(f"{_C.GRAY}没有操作记录{_C.RESET}")
         return
-    print("\n最近操作记录:")
+    print(f"{_C.GRAY}最近操作记录:{_C.RESET}")
     for log in logs:
         result = log['result']
-        status = "成功" if result.get('success') else "失败"
-        print(f"[{log['timestamp']}] {log['action_type']} - {status}")
+        mark = f"{_C.GREEN}✓{_C.RESET}" if result.get('success') else f"{_C.RED}✗{_C.RESET}"
+        print(f"  [{log['timestamp']}] {mark} {log['action_type']}")
 
 
 def _save_and_exit(session_id, agent):
     """保存会话并显示统计"""
     save_session(session_id, agent.messages)
     usage = agent.get_token_usage()
-    print(f"\n本次会话 Token 统计:")
-    print(f"  输入: {usage['input']}")
-    print(f"  输出: {usage['output']}")
-    print(f"  总计: {usage['total']}")
-    print("\n会话已保存，再见!")
+    print(f"\n{_C.GRAY}本次会话 Token 统计:{_C.RESET}")
+    print(f"  输入: {usage['input']}  输出: {usage['output']}  总计: {usage['total']}")
+    print(f"\n{_C.GRAY}会话已保存，再见!{_C.RESET}")
 
 
 def _print_stats(elapsed, before_usage, after_usage):
     """打印时间和 Token 统计"""
-    delta_in = after_usage["input"] - before_usage["input"]
-    delta_out = after_usage["output"] - before_usage["output"]
     delta_total = after_usage["total"] - before_usage["total"]
-    print(f"  [{elapsed:.2f}s | 本次 Token 输入:{delta_in} 输出:{delta_out} 总计:{delta_total} | 累计:{after_usage['total']}]")
-    print()
+    print(f"{_C.GRAY}  [{elapsed:.2f}s | +{delta_total}t | all：{after_usage['total']}]{_C.RESET}")
 
 
 def _print_help():
-    print("""可用命令:
-  /help            显示此帮助
-  /history         加载历史会话
-  /logs            查看最近操作日志
-  /save            手动保存当前会话
-  /model           切换模型
-  /undo [N]        撤销最近 N 次文件操作（默认 1）
-  /undo-list       查看可撤销的操作历史
-  /quit            退出程序
-  也可直接输入自然语言与助手对话
-""")
+    print(f"""{_C.GRAY}可用命令:{_C.RESET}
+  {_C.YELLOW}/help{_C.RESET}       显示此帮助
+  {_C.YELLOW}/history{_C.RESET}    加载历史会话
+  {_C.YELLOW}/logs{_C.RESET}       查看最近操作日志
+  {_C.YELLOW}/save{_C.RESET}       手动保存当前会话
+  {_C.YELLOW}/model{_C.RESET}      切换模型
+  {_C.YELLOW}/undo{_C.RESET} [N]   撤销最近 N 次文件操作
+  {_C.YELLOW}/undo-list{_C.RESET}  查看可撤销的操作历史
+  {_C.YELLOW}/quit{_C.RESET}       退出程序""")
 
 
 def main():
     load_dotenv()
 
-    print("=" * 50)
-    print("       本地文件操作助手")
-    print("=" * 50)
+    print(f"{_C.BOLD}本地文件操作助手{_C.RESET}  {_C.GRAY}—  输入 /help 查看命令{_C.RESET}")
     print()
 
     # 检查是否有默认模型配置
@@ -250,31 +252,30 @@ def main():
 
     # 如果默认模型加载失败，提示用户选择
     if not provider:
-        print(f"无法加载默认模型 '{default_model}'")
+        print(f"{_C.RED}无法加载默认模型 '{default_model}'{_C.RESET}")
         print()
         provider = select_model()
         if not provider:
             return
     else:
-        print(f"已加载默认模型: {default_model}")
+        print(f"{_C.GRAY}已加载默认模型: {default_model}{_C.RESET}")
 
     # 默认新建会话
     session_id = generate_session_id()
-    agent = FileAgent(provider, session_id=session_id)
+    agent = FileAgent(provider, session_id=session_id, interactive=True)
 
-    print(f"\n新会话已创建，ID: {session_id}")
+    print(f"{_C.GRAY}新会话 {session_id}{_C.RESET}")
     _print_help()
 
     while True:
         try:
-            user_input = input("你: ").strip()
+            user_input = input(f"{_C.GREEN}> {_C.RESET}").strip()
 
             if not user_input:
                 continue
 
             # 斜杠命令解析
             if user_input.startswith("/"):
-                # 拆出命令名与参数
                 parts = user_input[1:].split(maxsplit=1)
                 cmd = parts[0].lower() if parts else ""
                 arg_str = parts[1] if len(parts) > 1 else ""
@@ -284,7 +285,7 @@ def main():
                     break
                 elif cmd == "save":
                     save_session(session_id, agent.messages)
-                    print("会话已保存!")
+                    print(f"{_C.GRAY}已保存{_C.RESET}")
                     continue
                 elif cmd == "history":
                     sid, msgs = _cmd_history(agent)
@@ -300,7 +301,7 @@ def main():
                     new_provider = select_model()
                     if new_provider:
                         agent.llm = new_provider
-                        print("模型已切换!")
+                        print(f"{_C.GREEN}模型已切换{_C.RESET}")
                     continue
                 elif cmd == "help":
                     _print_help()
@@ -313,7 +314,7 @@ def main():
                         try:
                             count = max(1, int(arg_str.strip()))
                         except ValueError:
-                            print(f"无效的步数: {arg_str}")
+                            print(f"{_C.RED}无效步数: {arg_str}{_C.RESET}")
                             continue
                     result = undo_last(count=count)
                     if result["success"] or result.get("undone", 0) > 0:
@@ -321,31 +322,30 @@ def main():
                             if r["success"]:
                                 msg = r["message"]
                                 if isinstance(msg, dict):
-                                    print(f"✓ {msg['label']}")
+                                    print(f"{_C.GREEN}✓{_C.RESET} {msg['label']}")
                                     for sr in msg.get("sub_results", []):
-                                        mark = "  ✓" if sr["success"] else "  ✗"
-                                        print(f"{mark} {sr.get('message') or sr.get('error')}")
+                                        mark = f"{_C.GREEN}✓{_C.RESET}" if sr["success"] else f"{_C.RED}✗{_C.RESET}"
+                                        print(f"  {mark} {sr.get('message') or sr.get('error')}")
                                 else:
-                                    print(f"✓ {msg}")
+                                    print(f"{_C.GREEN}✓{_C.RESET} {msg}")
                             else:
-                                print(f"✗ {r.get('error')}")
+                                print(f"{_C.RED}✗{_C.RESET} {r.get('error')}")
                     else:
-                        print(f"撤销失败: {result.get('error')}")
+                        print(f"{_C.RED}撤销失败: {result.get('error')}{_C.RESET}")
                     continue
                 elif cmd in ("undo-list", "undolist"):
                     from file_ops import get_undo_history, set_active_session
                     set_active_session(agent.session_id)
                     h = get_undo_history()
                     if not h["items"]:
-                        print("撤销栈为空")
+                        print(f"{_C.GRAY}撤销栈为空{_C.RESET}")
                     else:
-                        print(f"\n撤销栈 (共 {h['count']} 条,显示最近 {len(h['items'])} 条,1 = 最近):")
+                        print(f"{_C.GRAY}撤销栈 ({h['count']} 条):{_C.RESET}")
                         for it in h["items"]:
                             print(f"  {it['index']}. [{it['type']}] {it['description']}")
                     continue
                 else:
-                    print(f"未知命令: {user_input}")
-                    print("输入 /help 查看可用命令")
+                    print(f"{_C.RED}未知命令{_C.RESET}  {user_input}")
                     continue
 
             # 普通对话
@@ -355,7 +355,7 @@ def main():
             elapsed = time.time() - before
             after_usage = agent.get_token_usage()
 
-            print(f"助手: {response}")
+            print(response)
             _print_stats(elapsed, before_usage, after_usage)
 
             # 自动保存会话
@@ -365,7 +365,7 @@ def main():
             _save_and_exit(session_id, agent)
             break
         except Exception as e:
-            print(f"发生错误: {e}")
+            print(f"{_C.RED}错误: {e}{_C.RESET}")
 
 
 if __name__ == "__main__":

@@ -1,9 +1,26 @@
 
+import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from file_ops import TOOL_REGISTRY, TOOL_SCHEMAS, set_active_session
 from utils import log_action
 from config import get_config
+
+
+def _thinking_animation(stop_event):
+    """后台线程：在模型调用期间显示递增的 token 计数动画"""
+    n = 0
+    start = time.time()
+    while not stop_event.is_set():
+        elapsed = time.time() - start
+        sys.stdout.write(f"\r  \033[90m⋯  +{n}t  ({elapsed:.1f}s)\033[0m")
+        sys.stdout.flush()
+        n += 1
+        stop_event.wait(0.1)
+    # 清除动画行
+    sys.stdout.write("\r" + " " * 40 + "\r")
+    sys.stdout.flush()
 
 
 SYSTEM_PROMPT = """你是一个本地文件操作助手。你可以帮助用户管理本地文件和文件夹。
@@ -34,11 +51,12 @@ SYSTEM_PROMPT = """你是一个本地文件操作助手。你可以帮助用户�
 class FileAgent:
     """文件操作代理"""
 
-    def __init__(self, llm_provider, session_id=None):
+    def __init__(self, llm_provider, session_id=None, interactive=True):
         self.llm = llm_provider
         self.messages = []
         self.total_tokens = {"input": 0, "output": 0, "total": 0}
         self.session_id = session_id or "default"
+        self.interactive = interactive
 
     def set_session(self, session_id):
         """切换当前会话 ID,后续工具调用会使用对应的撤销栈"""
@@ -49,12 +67,13 @@ class FileAgent:
         return self.total_tokens.copy()
 
     def _update_total_tokens(self):
-        """从 LLM Provider 获取并汇总 token 使用"""
+        """从 LLM Provider 获取并汇总 token 使用,返回本次增量"""
         usage = self.llm.get_token_usage()
         self.total_tokens["input"] += usage["input"]
         self.total_tokens["output"] += usage["output"]
         self.total_tokens["total"] += usage["total"]
         self.llm.reset_token_usage()
+        return usage.copy()
 
     def _need_confirm(self, tool_name, tool_args):
         """根据 config 判断该工具调用是否需要用户确认"""
@@ -94,13 +113,29 @@ class FileAgent:
         for tool_call in tool_calls:
             tool_name = tool_call["name"]
             tool_args = tool_call["arguments"]
+            desc = self._format_tool_call(tool_name, tool_args)
+
             if confirm_required and self._need_confirm(tool_name, tool_args):
-                action_desc = self._format_tool_call(tool_name, tool_args)
-                confirm = input(f"即将执行: {action_desc}\n确认执行? (y/n): ")
+                if self.interactive:
+                    print(f"  ⎿  {desc}")
+                confirm = input("  Allow? (y/n): ")
                 if confirm.lower() != "y":
+                    if self.interactive:
+                        print("  ⎿  Cancelled")
                     executed.append((tool_call, {"success": False, "error": "用户取消操作"}))
                     continue
-            executed.append((tool_call, self._execute_tool(tool_name, tool_args)))
+
+            if self.interactive:
+                print(f"  ⎿  {desc} …")
+            result = self._execute_tool(tool_name, tool_args)
+            if self.interactive:
+                msg = result.get("message")
+                err = result.get("error")
+                if msg:
+                    print(f"  ⎿  {msg}")
+                elif err:
+                    print(f"  ⎿  Error: {err}")
+            executed.append((tool_call, result))
         return executed
 
     def process(self, user_input, confirm_required=True):
@@ -118,12 +153,29 @@ class FileAgent:
                 self.messages.append({"role": "assistant", "content": msg})
                 return msg
 
-            response = self.llm.chat_with_tools(
-                messages=self.messages,
-                tools=TOOL_SCHEMAS,
-                system_prompt=SYSTEM_PROMPT,
-            )
-            self._update_total_tokens()
+            iter_start = time.time()
+            stop_event = threading.Event()
+            anim_thread = None
+            if self.interactive:
+                anim_thread = threading.Thread(target=_thinking_animation, args=(stop_event,))
+                anim_thread.start()
+
+            try:
+                response = self.llm.chat_with_tools(
+                    messages=self.messages,
+                    tools=TOOL_SCHEMAS,
+                    system_prompt=SYSTEM_PROMPT,
+                )
+            finally:
+                stop_event.set()
+                if anim_thread is not None:
+                    anim_thread.join()
+
+            delta = self._update_total_tokens()
+            iter_elapsed = time.time() - iter_start
+
+            if self.interactive and delta["total"] > 0:
+                print(f"\033[90m  [{iter_elapsed:.2f}s | +{delta['total']}t]\033[0m")
 
             if not response["tool_calls"]:
                 final = response["content"] or ""
@@ -138,8 +190,26 @@ class FileAgent:
             self.messages.extend(self.llm.build_tool_result_messages(executed))
 
         # 达到最大迭代次数仍未结束,要求模型用普通对话给出总结
-        final_response = self.llm.chat(messages=self.messages, system_prompt=SYSTEM_PROMPT)
-        self._update_total_tokens()
+        iter_start = time.time()
+        stop_event = threading.Event()
+        anim_thread = None
+        if self.interactive:
+            anim_thread = threading.Thread(target=_thinking_animation, args=(stop_event,))
+            anim_thread.start()
+
+        try:
+            final_response = self.llm.chat(messages=self.messages, system_prompt=SYSTEM_PROMPT)
+        finally:
+            stop_event.set()
+            if anim_thread is not None:
+                anim_thread.join()
+
+        delta = self._update_total_tokens()
+        iter_elapsed = time.time() - iter_start
+
+        if self.interactive and delta["total"] > 0:
+            print(f"\033[90m  [{iter_elapsed:.2f}s | +{delta['total']}t]\033[0m")
+
         self.messages.append({"role": "assistant", "content": final_response})
         return final_response
 
