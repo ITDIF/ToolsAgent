@@ -223,14 +223,14 @@ def _print_stats(elapsed, before_usage, after_usage):
 
 def _print_help():
     print(f"""{_C.GRAY}可用命令:{_C.RESET}
-  {_C.YELLOW}/help{_C.RESET}       显示此帮助
-  {_C.YELLOW}/history{_C.RESET}    加载历史会话
-  {_C.YELLOW}/logs{_C.RESET}       查看最近操作日志
-  {_C.YELLOW}/save{_C.RESET}       手动保存当前会话
-  {_C.YELLOW}/model{_C.RESET}      切换模型
-  {_C.YELLOW}/undo{_C.RESET} [N]   撤销最近 N 次文件操作
-  {_C.YELLOW}/undo-list{_C.RESET}  查看可撤销的操作历史
-  {_C.YELLOW}/quit{_C.RESET}       退出程序""")
+  {_C.YELLOW}/help{_C.RESET}       显示此帮助 (别名: /h)
+  {_C.YELLOW}/history{_C.RESET}    加载历史会话 (别名: /his)
+  {_C.YELLOW}/logs{_C.RESET}       查看最近操作日志 (别名: /log, /l)
+  {_C.YELLOW}/save{_C.RESET}       手动保存当前会话 (别名: /s)
+  {_C.YELLOW}/model{_C.RESET}      切换模型 (别名: /m)
+  {_C.YELLOW}/undo{_C.RESET} [N]   撤销最近 N 次文件操作 (别名: /u)
+  {_C.YELLOW}/undo-list{_C.RESET}  查看可撤销的操作历史 (别名: /ul, /undolist)
+  {_C.YELLOW}/quit{_C.RESET}       退出程序 (别名: /q, /exit)""")
 
 
 def main():
@@ -283,30 +283,30 @@ def main():
                 if cmd in ["quit", "exit", "q"]:
                     _save_and_exit(session_id, agent)
                     break
-                elif cmd == "save":
+                elif cmd in ["save", "s"]:
                     save_session(session_id, agent.messages)
                     print(f"{_C.GRAY}已保存{_C.RESET}")
                     continue
-                elif cmd == "history":
+                elif cmd in ["history", "his"]:
                     sid, msgs = _cmd_history(agent)
                     if sid and msgs is not None:
                         session_id = sid
                         agent.set_session(sid)
                         agent.messages = msgs
                     continue
-                elif cmd == "logs":
+                elif cmd in ["logs", "log", "l"]:
                     _cmd_logs()
                     continue
-                elif cmd == "model":
+                elif cmd in ["model", "m"]:
                     new_provider = select_model()
                     if new_provider:
                         agent.llm = new_provider
                         print(f"{_C.GREEN}模型已切换{_C.RESET}")
                     continue
-                elif cmd == "help":
+                elif cmd in ["help", "h"]:
                     _print_help()
                     continue
-                elif cmd == "undo":
+                elif cmd in ["undo", "u"]:
                     from file_ops import undo_last, set_active_session
                     set_active_session(agent.session_id)
                     count = 1
@@ -333,7 +333,7 @@ def main():
                     else:
                         print(f"{_C.RED}撤销失败: {result.get('error')}{_C.RESET}")
                     continue
-                elif cmd in ("undo-list", "undolist"):
+                elif cmd in ("undo-list", "undolist", "ul"):
                     from file_ops import get_undo_history, set_active_session
                     set_active_session(agent.session_id)
                     h = get_undo_history()
