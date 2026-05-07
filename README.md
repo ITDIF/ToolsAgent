@@ -16,6 +16,8 @@
 - 重命名文件/文件夹
 - 搜索文件/文件夹
 - 列出文件
+- **压缩文件/文件夹**（支持 zip、tar、tar.gz、tgz、tar.bz2、rar）
+- **解压压缩文件**（支持 zip、tar、tar.gz、tgz、tar.bz2、rar）
 
 ### 增强功能
 - 会话历史持久化
@@ -23,6 +25,10 @@
 - 多模型支持
 - 工具执行超时保护（默认30秒）
 - 可配置参数（通过 `~/.toolsagent/config.json`）
+- 命令缩写支持
+- 撤销最近的操作（支持指定步数）
+- 批量执行多个操作（失败可一次撤销全部）
+- **压缩/解压文件**（支持 zip、tar、tar.gz、tgz、tar.bz2、rar）
 
 ## 支持的模型
 
@@ -84,12 +90,28 @@ python main.py
 
 你: 读取 README.md 的内容
 助手: 文件内容...
+
+你: 把 data 文件夹压缩成 backup.zip
+助手: 已创建压缩文件: backup.zip
+
+你: 解压 archive.tar.gz
+助手: 已解压: archive.tar.gz -> archive/
 ```
 
 ## 特殊命令
 
-- `quit/exit/退出` - 退出程序
-- `save` - 手动保存会话
+支持命令缩写，方便快捷操作：
+
+| 命令 | 缩写 |
+|------|------|
+| `/help` | `/h` |
+| `/history` | `/his` |
+| `/logs` | `/l`, `/log` |
+| `/save` | `/s` |
+| `/model` | `/m` |
+| `/undo` | `/u` |
+| `/undo-list` | `/ul` |
+| `/quit` | `/q`, `/exit` |
 
 ## 配置
 
@@ -122,6 +144,14 @@ python main.py
 | `confirm_delete` | true | 删除前是否确认 |
 | `confirm_overwrite` | true | 覆盖写入前是否确认 |
 | `allowed_roots` | [] | 写操作白名单根目录列表；为空时启用系统目录黑名单 |
+| `rar_executable` | "" | RAR/WinRAR 可执行文件路径（用于创建 .rar 压缩文件） |
+
+## 支持的压缩格式
+
+| 操作 | 支持格式 |
+|------|----------|
+| **压缩** | `.zip`, `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.rar`（需安装 RAR/WinRAR） |
+| **解压** | `.zip`, `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.rar`（需安装 rarfile + unrar） |
 
 ## 数据存储位置
 
@@ -162,10 +192,10 @@ class MyProvider(OpenAICompatibleProvider):
 
 ```
 ToolsAgent/
-├── main.py                    # CLI 入口
-├── agent.py                   # Agent 协调层（多轮工具循环）
+├── main.py                    # CLI 入口（命令缩写支持）
+├── agent.py                   # Agent 协调层（多轮工具循环，防重复确认）
 ├── config.py                  # 配置管理
-├── file_ops.py                # 文件操作工具（写操作走路径沙箱）
+├── file_ops.py                # 文件操作工具（含压缩/解压，写操作走路径沙箱）
 ├── path_safety.py             # 路径安全校验（黑/白名单）
 ├── utils.py                   # 工具函数（日志写入与清理）
 ├── session.py                 # 会话管理
@@ -174,9 +204,10 @@ ToolsAgent/
 ├── .env.example               # 环境变量示例
 ├── README.md                  # 文档
 ├── tests/                     # 单元测试
-│   ├── test_file_ops.py       # 文件操作测试
+│   ├── test_file_ops.py       # 文件操作测试（含压缩/解压）
 │   ├── test_session.py        # 会话管理测试
 │   ├── test_token.py          # Token 计数测试
+│   ├── test_undo.py           # 撤销与批量操作测试
 │   └── test_utils.py          # 工具函数测试
 └── providers/
     ├── __init__.py            # 导出

@@ -5,7 +5,8 @@ import pytest
 
 from file_ops import (
     move_file, copy_file, delete_file, create_folder, create_file,
-    read_file, write_file, rename_file, search_files, list_files, scan_disk
+    read_file, write_file, rename_file, search_files, list_files, scan_disk,
+    extract_archive, create_archive
 )
 
 
@@ -232,3 +233,218 @@ class TestScanDisk:
     def test_nonexistent(self):
         result = scan_disk("/nonexistent/scan")
         assert result["success"] is False
+
+
+class TestExtractArchive:
+    def test_extract_zip(self, tmp_dir):
+        import zipfile
+        # 创建测试 zip 文件
+        zip_path = os.path.join(tmp_dir, "test.zip")
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("test.txt", "Hello World!")
+            zf.writestr("subdir/file.txt", "Nested file!")
+
+        output_path = os.path.join(tmp_dir, "extracted")
+        result = extract_archive(zip_path, output_path)
+        assert result["success"] is True
+        assert os.path.exists(os.path.join(output_path, "test.txt"))
+        assert os.path.exists(os.path.join(output_path, "subdir", "file.txt"))
+
+    def test_extract_zip_default_path(self, tmp_dir):
+        import zipfile
+        zip_path = os.path.join(tmp_dir, "test.zip")
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("test.txt", "Hello World!")
+
+        result = extract_archive(zip_path)
+        assert result["success"] is True
+        expected_path = os.path.join(tmp_dir, "test")
+        assert os.path.exists(expected_path)
+        assert os.path.exists(os.path.join(expected_path, "test.txt"))
+
+    def test_extract_tar_gz(self, tmp_dir):
+        import tarfile
+        tar_path = os.path.join(tmp_dir, "test.tar.gz")
+        with tarfile.open(tar_path, "w:gz") as tf:
+            test_file = os.path.join(tmp_dir, "temp_test.txt")
+            with open(test_file, "w") as f:
+                f.write("Tar GZ test")
+            tf.add(test_file, arcname="test.txt")
+            os.remove(test_file)
+
+        output_path = os.path.join(tmp_dir, "extracted_tar")
+        result = extract_archive(tar_path, output_path)
+        assert result["success"] is True
+        assert os.path.exists(os.path.join(output_path, "test.txt"))
+
+    def test_extract_invalid_format(self, tmp_dir):
+        invalid_path = os.path.join(tmp_dir, "invalid.xyz")
+        with open(invalid_path, "w") as f:
+            f.write("Invalid format")
+
+        result = extract_archive(invalid_path)
+        assert result["success"] is False
+        assert "不支持" in result["error"]
+
+    def test_extract_nonexistent(self):
+        result = extract_archive("/nonexistent/archive.zip")
+        assert result["success"] is False
+        assert "不存在" in result["error"]
+
+    def test_extract_rar_support_info(self, tmp_dir):
+        # 创建一个假的 .rar 文件（不是真正的 RAR，只是为了测试格式检测）
+        rar_path = os.path.join(tmp_dir, "test.rar")
+        with open(rar_path, "w") as f:
+            f.write("fake rar file")
+
+        # 尝试解压，会检查 RAR 支持
+        result = extract_archive(rar_path)
+        # 如果 rarfile 不可用或系统没有 unrar，会返回相应的错误
+        # 我们不一定要它成功解压，只是验证错误信息是合理的
+        assert "RAR" in result["error"] or not result["success"]
+
+
+class TestCreateArchive:
+    def test_create_zip_single_file(self, tmp_dir):
+        # 创建测试文件
+        src_file = os.path.join(tmp_dir, "test.txt")
+        with open(src_file, "w") as f:
+            f.write("Test content")
+
+        # 压缩
+        archive_path = os.path.join(tmp_dir, "test.zip")
+        result = create_archive(src_file, archive_path)
+        assert result["success"] is True
+        assert os.path.exists(archive_path)
+
+        # 验证压缩文件包含正确内容
+        import zipfile
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            assert "test.txt" in zf.namelist()
+            assert zf.read("test.txt") == b"Test content"
+
+    def test_create_zip_multiple_files(self, tmp_dir):
+        # 创建测试文件
+        file1 = os.path.join(tmp_dir, "file1.txt")
+        file2 = os.path.join(tmp_dir, "file2.txt")
+        with open(file1, "w") as f:
+            f.write("Content 1")
+        with open(file2, "w") as f:
+            f.write("Content 2")
+
+        # 压缩
+        archive_path = os.path.join(tmp_dir, "multi.zip")
+        result = create_archive([file1, file2], archive_path)
+        assert result["success"] is True
+        assert os.path.exists(archive_path)
+
+        # 验证
+        import zipfile
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            assert "file1.txt" in zf.namelist()
+            assert "file2.txt" in zf.namelist()
+
+    def test_create_zip_folder(self, tmp_dir):
+        # 创建测试文件夹
+        folder = os.path.join(tmp_dir, "test_dir")
+        os.makedirs(folder)
+        file1 = os.path.join(folder, "a.txt")
+        file2 = os.path.join(folder, "sub", "b.txt")
+        os.makedirs(os.path.dirname(file2))
+        with open(file1, "w") as f:
+            f.write("A content")
+        with open(file2, "w") as f:
+            f.write("B content")
+
+        # 压缩
+        archive_path = os.path.join(tmp_dir, "folder.zip")
+        result = create_archive(folder, archive_path)
+        assert result["success"] is True
+
+        # 验证
+        import zipfile
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            names = zf.namelist()
+            assert any("a.txt" in n for n in names)
+            assert any("b.txt" in n for n in names)
+
+    def test_create_tar_gz(self, tmp_dir):
+        # 创建测试文件
+        src_file = os.path.join(tmp_dir, "test.txt")
+        with open(src_file, "w") as f:
+            f.write("Tar content")
+
+        # 压缩
+        archive_path = os.path.join(tmp_dir, "test.tar.gz")
+        result = create_archive(src_file, archive_path)
+        assert result["success"] is True
+        assert os.path.exists(archive_path)
+
+    def test_create_tgz(self, tmp_dir):
+        # 创建测试文件
+        src_file = os.path.join(tmp_dir, "test.txt")
+        with open(src_file, "w") as f:
+            f.write("TGZ content")
+
+        # 压缩
+        archive_path = os.path.join(tmp_dir, "test.tgz")
+        result = create_archive(src_file, archive_path)
+        assert result["success"] is True
+
+    def test_create_tar_bz2(self, tmp_dir):
+        # 创建测试文件
+        src_file = os.path.join(tmp_dir, "test.txt")
+        with open(src_file, "w") as f:
+            f.write("BZ2 content")
+
+        # 压缩
+        archive_path = os.path.join(tmp_dir, "test.tar.bz2")
+        result = create_archive(src_file, archive_path)
+        assert result["success"] is True
+
+    def test_create_with_format_param(self, tmp_dir):
+        # 创建测试文件
+        src_file = os.path.join(tmp_dir, "test.txt")
+        with open(src_file, "w") as f:
+            f.write("Format test")
+
+        # 使用 format 参数，文件没有后缀
+        archive_path = os.path.join(tmp_dir, "archive")
+        result = create_archive(src_file, archive_path, format="zip")
+        assert result["success"] is True
+
+    def test_create_invalid_format(self, tmp_dir):
+        # 创建测试文件
+        src_file = os.path.join(tmp_dir, "test.txt")
+        with open(src_file, "w") as f:
+            f.write("test")
+
+        # 尝试使用不支持的格式
+        archive_path = os.path.join(tmp_dir, "test.xyz")
+        result = create_archive(src_file, archive_path)
+        assert result["success"] is False
+        assert "不支持" in result["error"]
+
+    def test_create_nonexistent_source(self, tmp_dir):
+        # 尝试压缩不存在的文件
+        archive_path = os.path.join(tmp_dir, "test.zip")
+        result = create_archive("/nonexistent/file", archive_path)
+        assert result["success"] is False
+        assert "不存在" in result["error"]
+
+    def test_create_rar_support_check(self, tmp_dir):
+        # 测试 RAR 格式支持检查（不依赖真实的 RAR 工具）
+        src_file = os.path.join(tmp_dir, "test.txt")
+        with open(src_file, "w") as f:
+            f.write("Test content")
+
+        archive_path = os.path.join(tmp_dir, "test.rar")
+        result = create_archive(src_file, archive_path)
+
+        # 由于系统可能没有安装 RAR 工具，这里可能会失败，但我们可以验证错误信息的合理性
+        if result["success"]:
+            # 如果成功了，验证是 RAR 文件
+            assert os.path.exists(archive_path)
+        else:
+            # 如果失败了，应该是关于 RAR 工具的提示
+            assert "RAR" in result["error"]

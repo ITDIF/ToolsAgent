@@ -171,7 +171,7 @@ def _cmd_history(agent):
     print(f"{_C.GRAY}历史会话:{_C.RESET}")
     for i, s in enumerate(sessions, 1):
         print(f"  {i}. {s['id']} ({s['message_count']}条消息, {s['updated_at']})")
-    idx = input(f"{_C.GREEN}> {_C.RESET}").strip()
+    idx = input(f"{_C.GRAY}输入序号加载会话 (按回车取消){_C.RESET}\n{_C.GREEN}> {_C.RESET}").strip()
     if not idx:
         return None, None
     try:

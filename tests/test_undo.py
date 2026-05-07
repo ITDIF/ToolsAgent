@@ -6,8 +6,8 @@ import pytest
 
 from file_ops import (
     move_file, copy_file, delete_file, create_folder, create_file,
-    write_file, rename_file, undo_last, get_undo_stack,
-    clear_undo_stack, get_undo_history, batch_operations,
+    write_file, rename_file, extract_archive, create_archive, undo_last,
+    get_undo_stack, clear_undo_stack, get_undo_history, batch_operations,
     set_active_session, cleanup_old_backups
 )
 
@@ -488,3 +488,116 @@ class TestCleanupOldBackups:
         assert not old_dir.exists()
         assert new_dir.exists()
         assert other_dir.exists()
+
+
+class TestUndoExtract:
+    def test_undo_extract_zip(self, temp_workspace):
+        import zipfile
+        # 创建 zip 文件
+        zip_path = temp_workspace / "test.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("test.txt", "content")
+
+        # 解压
+        output = temp_workspace / "output"
+        result = extract_archive(str(zip_path), str(output))
+        assert result["success"]
+        assert (output / "test.txt").exists()
+
+        # 撤销解压
+        undo_result = undo_last()
+        assert undo_result["success"]
+        assert not output.exists()
+
+    def test_undo_extract_overwrite_existing(self, temp_workspace):
+        import zipfile
+        # 创建 zip 文件
+        zip_path = temp_workspace / "test.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("test.txt", "new content")
+
+        # 先创建同名目录和文件
+        output = temp_workspace / "output"
+        output.mkdir()
+        existing_file = output / "existing.txt"
+        existing_file.write_text("old content")
+
+        # 解压，不会覆盖现有文件
+        result = extract_archive(str(zip_path), str(output))
+        assert result["success"]
+        assert (output / "test.txt").exists()
+        assert existing_file.exists()
+
+        # 撤销解压，删除新解压的内容，保留原有内容
+        undo_result = undo_last()
+        assert undo_result["success"]
+        assert output.exists()
+        assert existing_file.exists()
+        assert existing_file.read_text() == "old content"
+        assert not (output / "test.txt").exists()
+
+    def test_undo_history_shows_extract(self, temp_workspace):
+        import zipfile
+        zip_path = temp_workspace / "test.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("test.txt", "content")
+
+        extract_archive(str(zip_path))
+
+        history = get_undo_history()
+        assert history["count"] == 1
+        assert "解压" in history["items"][0]["description"]
+
+
+class TestUndoCreateArchive:
+    def test_undo_create_zip(self, temp_workspace):
+        # 创建测试文件
+        test_file = temp_workspace / "test.txt"
+        test_file.write_text("test content")
+        assert test_file.exists()
+
+        # 压缩
+        zip_path = temp_workspace / "test.zip"
+        result = create_archive(str(test_file), str(zip_path))
+        assert result["success"]
+        assert zip_path.exists()
+
+        # 撤销压缩
+        undo_result = undo_last()
+        assert undo_result["success"]
+        assert not zip_path.exists()
+
+    def test_undo_history_shows_create_archive(self, temp_workspace):
+        # 创建测试文件
+        test_file = temp_workspace / "test.txt"
+        test_file.write_text("test")
+        zip_path = temp_workspace / "archive.zip"
+
+        create_archive(str(test_file), str(zip_path))
+
+        history = get_undo_history()
+        assert history["count"] == 1
+        assert "压缩" in history["items"][0]["description"]
+
+    def test_undo_overwrite_existing(self, temp_workspace):
+        # 先创建一个已存在的压缩文件
+        existing_zip = temp_workspace / "existing.zip"
+        import zipfile
+        with zipfile.ZipFile(existing_zip, "w") as zf:
+            zf.writestr("old.txt", "old content")
+
+        # 创建新的测试文件并压缩
+        new_file = temp_workspace / "new.txt"
+        new_file.write_text("new content")
+        result = create_archive(str(new_file), str(existing_zip))
+        assert result["success"]
+
+        # 验证文件已被覆盖
+        with zipfile.ZipFile(existing_zip, "r") as zf:
+            assert "new.txt" in zf.namelist()
+
+        # 撤销压缩，恢复原文件
+        undo_result = undo_last()
+        assert undo_result["success"]
+        with zipfile.ZipFile(existing_zip, "r") as zf:
+            assert "old.txt" in zf.namelist()

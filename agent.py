@@ -107,26 +107,47 @@ class FileAgent:
         except TypeError as e:
             return {"success": False, "error": f"工具参数错误: {e}"}
 
-    def _handle_tool_calls(self, tool_calls, confirm_required):
-        """对一组 tool_calls 依次取得用户确认并执行,返回 [(tool_call, result)]"""
+    def _handle_tool_calls(self, tool_calls, confirm_required, confirmed_operations=None):
+        """对一组 tool_calls 依次取得用户确认并执行,返回 [(tool_call, result)]
+
+        confirmed_operations: 已确认的操作集合，用于避免重复询问相同操作
+        """
+        if confirmed_operations is None:
+            confirmed_operations = set()
         executed = []
         for tool_call in tool_calls:
             tool_name = tool_call["name"]
             tool_args = tool_call["arguments"]
             desc = self._format_tool_call(tool_name, tool_args)
 
-            if confirm_required and self._need_confirm(tool_name, tool_args):
-                if self.interactive:
-                    print(f"  ⎿  {desc}")
-                confirm = input("  Allow? (y/n): ")
-                if confirm.lower() != "y":
-                    if self.interactive:
-                        print("  ⎿  Cancelled")
-                    executed.append((tool_call, {"success": False, "error": "用户取消操作"}))
-                    continue
+            # 生成操作标识用于去重
+            operation_key = f"{tool_name}:{tuple(sorted((k, str(v)) for k, v in tool_args.items()))}"
 
-            if self.interactive:
-                print(f"  ⎿  {desc} …")
+            need_confirm = confirm_required and self._need_confirm(tool_name, tool_args)
+
+            # 如果是需要确认的操作，检查是否已经确认过了
+            if need_confirm:
+                if operation_key in confirmed_operations:
+                    # 已经确认过了，跳过再次询问
+                    if self.interactive:
+                        print(f"  ⎿  {desc} … (已确认)")
+                else:
+                    # 还没确认过，询问用户
+                    if self.interactive:
+                        print(f"  ⎿  {desc}")
+                    confirm = input("  Allow? (y/n): ")
+                    if confirm.lower() != "y":
+                        if self.interactive:
+                            print("  ⎿  Cancelled")
+                        executed.append((tool_call, {"success": False, "error": "用户取消操作"}))
+                        continue
+                    # 记录已确认的操作
+                    confirmed_operations.add(operation_key)
+            else:
+                # 不需要确认的操作
+                if self.interactive:
+                    print(f"  ⎿  {desc} …")
+
             result = self._execute_tool(tool_name, tool_args)
             if self.interactive:
                 msg = result.get("message")
@@ -146,6 +167,9 @@ class FileAgent:
         cfg = get_config()
         max_iterations = int(cfg.get("max_tool_iterations", 8))
         max_time = float(cfg.get("max_request_time", 300))
+
+        # 在同一次请求中记录已确认的操作，避免重复询问
+        confirmed_operations = set()
 
         for _ in range(max_iterations):
             if time.time() - start_time > max_time:
@@ -182,7 +206,7 @@ class FileAgent:
                 self.messages.append({"role": "assistant", "content": final})
                 return final
 
-            executed = self._handle_tool_calls(response["tool_calls"], confirm_required)
+            executed = self._handle_tool_calls(response["tool_calls"], confirm_required, confirmed_operations)
 
             self.messages.extend(
                 self.llm.build_assistant_message(response["content"], response["tool_calls"])
@@ -268,6 +292,22 @@ class FileAgent:
         elif tool_name == "scan_disk":
             path = args.get("path", ".")
             return f"扫描 {path} 的磁盘占用"
+        elif tool_name == "extract_archive":
+            output = args.get("output_path")
+            if output:
+                return f"解压 {args['archive_path']} 到 {output}"
+            else:
+                return f"解压 {args['archive_path']}"
+        elif tool_name == "create_archive":
+            srcs = args.get("source_paths")
+            if isinstance(srcs, list):
+                if len(srcs) == 1:
+                    src_str = srcs[0]
+                else:
+                    src_str = f"{len(srcs)} 个文件"
+            else:
+                src_str = srcs
+            return f"压缩 {src_str} -> {args['archive_path']}"
         else:
             return f"{tool_name} {args}"
 
