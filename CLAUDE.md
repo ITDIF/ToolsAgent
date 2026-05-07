@@ -16,6 +16,9 @@ python main.py                   # 启动 CLI
 - **`read_file` 受 `max_read_bytes` 限制**,超出截断并返回 `truncated:true`,不要去掉这个保护。
 - **多轮工具循环上限是 `max_tool_iterations`**(默认 8),超过会落到 `chat()` 兜底总结。
 - **消息格式由 Provider 决定**:agent 调用 `provider.build_assistant_message` / `build_tool_result_messages`,不要在 agent 里手拼 OpenAI/Anthropic 风格的消息。
+- **撤销栈是全局 + 锁**:`_UNDO_STACK` 由 `_UNDO_LOCK` 保护;新增写工具必须在执行成功后调 `_push_undo({...})` 写入 action,撤销逻辑分支在 `_apply_undo_action` 里加。新增 action 类型时同步更新 `_describe_action`。
+- **批量操作通过 `_BATCH_CONTEXT.sub_actions` 收集子撤销**:在 `batch_operations` 内调用的写函数会把 undo 写到 batch 里而非主栈,最终整个 batch 作为一条 `type=batch` 入栈、可一次回滚。`_BATCH_ALLOWED_TOOLS` 是子工具白名单,新增可批量调用的工具时记得加入。
+- **测试涉及撤销栈时**,务必用 `clear_undo_stack()`(已在 `tests/test_undo.py` 用 autouse fixture 自动清理)避免污染。
 
 ## 数据目录
 

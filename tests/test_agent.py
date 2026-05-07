@@ -79,3 +79,63 @@ class TestTokenUsage:
         assert usage["input"] == 10
         assert usage["output"] == 5
         assert usage["total"] == 15
+
+
+class TestNeedConfirmBatch:
+    def _agent(self):
+        return FileAgent(MockProvider())
+
+    def test_batch_with_delete_needs_confirm(self):
+        agent = self._agent()
+        agent.config["confirm_delete"] = True
+        ops = [
+            {"tool": "create_file", "arguments": {"path": "/tmp/a"}},
+            {"tool": "delete_file", "arguments": {"path": "/tmp/b"}},
+        ]
+        assert agent._need_confirm("batch_operations", {"operations": ops}) is True
+
+    def test_batch_without_sensitive_ops_no_confirm(self):
+        agent = self._agent()
+        ops = [
+            {"tool": "create_file", "arguments": {"path": "/tmp/a"}},
+            {"tool": "create_folder", "arguments": {"path": "/tmp/b"}},
+        ]
+        assert agent._need_confirm("batch_operations", {"operations": ops}) is False
+
+    def test_batch_with_overwrite_respects_config(self):
+        agent = self._agent()
+        agent.config["confirm_overwrite"] = False
+        ops = [
+            {"tool": "write_file", "arguments": {"path": "/tmp/a", "content": "x"}},
+        ]
+        assert agent._need_confirm("batch_operations", {"operations": ops}) is False
+        agent.config["confirm_overwrite"] = True
+        assert agent._need_confirm("batch_operations", {"operations": ops}) is True
+
+
+class TestFormatToolCall:
+    def test_format_undo_with_count(self):
+        agent = FileAgent(MockProvider())
+        assert agent._format_tool_call("undo_last", {}) == "撤销最后一次操作"
+        assert "3" in agent._format_tool_call("undo_last", {"count": 3})
+
+    def test_format_batch_preview(self):
+        agent = FileAgent(MockProvider())
+        ops = [
+            {"tool": "create_file", "arguments": {"path": "/tmp/a"}},
+            {"tool": "delete_file", "arguments": {"path": "/tmp/b"}},
+        ]
+        desc = agent._format_tool_call("batch_operations", {"operations": ops, "label": "整理"})
+        assert "整理" in desc
+        assert "/tmp/a" in desc
+        assert "/tmp/b" in desc
+
+    def test_format_batch_truncates(self):
+        agent = FileAgent(MockProvider())
+        ops = [
+            {"tool": "create_file", "arguments": {"path": f"/tmp/f{i}.txt"}}
+            for i in range(10)
+        ]
+        desc = agent._format_tool_call("batch_operations", {"operations": ops})
+        assert "10" in desc
+        assert "省略" in desc

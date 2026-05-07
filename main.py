@@ -216,12 +216,14 @@ def _print_stats(elapsed, before_usage, after_usage):
 
 def _print_help():
     print("""可用命令:
-  /help      显示此帮助
-  /history   加载历史会话
-  /logs      查看最近操作日志
-  /save      手动保存当前会话
-  /model     切换模型
-  /quit      退出程序
+  /help            显示此帮助
+  /history         加载历史会话
+  /logs            查看最近操作日志
+  /save            手动保存当前会话
+  /model           切换模型
+  /undo [N]        撤销最近 N 次文件操作（默认 1）
+  /undo-list       查看可撤销的操作历史
+  /quit            退出程序
   也可直接输入自然语言与助手对话
 """)
 
@@ -270,7 +272,10 @@ def main():
 
             # 斜杠命令解析
             if user_input.startswith("/"):
-                cmd = user_input[1:].lower()
+                # 拆出命令名与参数
+                parts = user_input[1:].split(maxsplit=1)
+                cmd = parts[0].lower() if parts else ""
+                arg_str = parts[1] if len(parts) > 1 else ""
 
                 if cmd in ["quit", "exit", "q"]:
                     _save_and_exit(session_id, agent)
@@ -296,6 +301,42 @@ def main():
                     continue
                 elif cmd == "help":
                     _print_help()
+                    continue
+                elif cmd == "undo":
+                    from file_ops import undo_last
+                    count = 1
+                    if arg_str:
+                        try:
+                            count = max(1, int(arg_str.strip()))
+                        except ValueError:
+                            print(f"无效的步数: {arg_str}")
+                            continue
+                    result = undo_last(count=count)
+                    if result["success"] or result.get("undone", 0) > 0:
+                        for r in result.get("results", []):
+                            if r["success"]:
+                                msg = r["message"]
+                                if isinstance(msg, dict):
+                                    print(f"✓ {msg['label']}")
+                                    for sr in msg.get("sub_results", []):
+                                        mark = "  ✓" if sr["success"] else "  ✗"
+                                        print(f"{mark} {sr.get('message') or sr.get('error')}")
+                                else:
+                                    print(f"✓ {msg}")
+                            else:
+                                print(f"✗ {r.get('error')}")
+                    else:
+                        print(f"撤销失败: {result.get('error')}")
+                    continue
+                elif cmd in ("undo-list", "undolist"):
+                    from file_ops import get_undo_history
+                    h = get_undo_history()
+                    if not h["items"]:
+                        print("撤销栈为空")
+                    else:
+                        print(f"\n撤销栈 (共 {h['count']} 条,显示最近 {len(h['items'])} 条,1 = 最近):")
+                        for it in h["items"]:
+                            print(f"  {it['index']}. [{it['type']}] {it['description']}")
                     continue
                 else:
                     print(f"未知命令: {user_input}")

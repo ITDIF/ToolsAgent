@@ -1,5 +1,4 @@
 
-import json
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from file_ops import TOOL_REGISTRY, TOOL_SCHEMAS
@@ -21,8 +20,15 @@ SYSTEM_PROMPT = """你是一个本地文件操作助手。你可以帮助用户�
 - 搜索文件/文件夹
 - 列出文件
 - 扫描磁盘占用（统计各文件夹大小）
+- 撤销最近的操作（支持指定步数,批量操作算一步整体撤销）
+- 查看撤销历史
+- 批量执行多个操作（适合需要一次完成多个相关写操作的场景,如整理目录、批量改名;失败可一次撤销全部）
 
-请先理解用户的意图，然后选择合适的工具执行操作。执行危险操作（如删除、覆盖写入）前，请确保用户明确确认。如果完成用户的请求需要多步工具操作，请逐步进行，每一步根据上一步结果决定下一步动作。"""
+请先理解用户的意图，然后选择合适的工具执行操作。
+
+涉及大量同类操作（>=3 个相关步骤）时,优先使用 batch_operations,这样用户可以一次撤销整个批量。
+执行危险操作（如删除、覆盖写入）前，请确保用户明确确认。
+如果完成用户的请求需要多步工具操作，请逐步进行，每一步根据上一步结果决定下一步动作。"""
 
 
 class FileAgent:
@@ -52,6 +58,13 @@ class FileAgent:
             return self.config.get("confirm_delete", True)
         if tool_name == "write_file" and not tool_args.get("append", False):
             return self.config.get("confirm_overwrite", True)
+        if tool_name == "batch_operations":
+            # 任一子操作需要确认,批量整体就需要确认
+            for op in tool_args.get("operations", []) or []:
+                if not isinstance(op, dict):
+                    continue
+                if self._need_confirm(op.get("tool"), op.get("arguments") or {}):
+                    return True
         return False
 
     def _execute_tool(self, tool_name, tool_args):
@@ -125,7 +138,28 @@ class FileAgent:
 
     def _format_tool_call(self, tool_name, args):
         """格式化工具调用描述"""
-        if tool_name == "move_file":
+        if tool_name == "undo_last":
+            count = args.get("count", 1)
+            return f"撤销最近 {count} 次操作" if count != 1 else "撤销最后一次操作"
+        elif tool_name == "undo_history":
+            return "查看撤销历史"
+        elif tool_name == "batch_operations":
+            ops = args.get("operations", []) or []
+            label = args.get("label")
+            head = label or f"批量执行 {len(ops)} 个操作"
+            preview_lines = []
+            for op in ops[:5]:
+                if not isinstance(op, dict):
+                    continue
+                sub_name = op.get("tool", "?")
+                sub_args = op.get("arguments") or {}
+                preview_lines.append(f"  - {self._format_tool_call(sub_name, sub_args)}")
+            more = len(ops) - len(preview_lines)
+            if more > 0:
+                preview_lines.append(f"  - ... 共 {len(ops)} 步,省略 {more} 步")
+            preview = "\n".join(preview_lines)
+            return f"{head}\n{preview}" if preview else head
+        elif tool_name == "move_file":
             return f"移动 {args['src']} 到 {args['dst']}"
         elif tool_name == "copy_file":
             return f"复制 {args['src']} 到 {args['dst']}"
