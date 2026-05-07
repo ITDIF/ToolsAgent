@@ -1,12 +1,14 @@
 import os
 import tempfile
+import time
 from pathlib import Path
 import pytest
 
 from file_ops import (
     move_file, copy_file, delete_file, create_folder, create_file,
     write_file, rename_file, undo_last, get_undo_stack,
-    clear_undo_stack, get_undo_history, batch_operations
+    clear_undo_stack, get_undo_history, batch_operations,
+    set_active_session, cleanup_old_backups
 )
 
 
@@ -254,7 +256,7 @@ class TestUndoHistory:
         h = get_undo_history()
         assert h["count"] == 2
         # 最近的在第一位
-        assert h["items"][0]["type"] == "create_file"
+        assert h["items"][0]["type"] == "write_target"
         assert "b.txt" in h["items"][0]["description"]
         assert "a.txt" in h["items"][1]["description"]
 
@@ -388,3 +390,101 @@ class TestBatchOperations:
         assert not f2.exists()
         assert not (temp_workspace / "b1.txt").exists()
         assert not (temp_workspace / "b2.txt").exists()
+
+
+class TestOverwriteUndo:
+    def test_undo_create_file_overwrite_existing(self, temp_workspace):
+        target = temp_workspace / "existing.txt"
+        target.write_text("original")
+        result = create_file(str(target), "new content")
+        assert result["success"]
+        assert target.read_text() == "new content"
+        undo_last()
+        assert target.read_text() == "original"
+
+    def test_undo_move_restores_existing_dst(self, temp_workspace):
+        src = temp_workspace / "src.txt"
+        dst = temp_workspace / "dst.txt"
+        src.write_text("src_data")
+        dst.write_text("dst_data")
+        move_file(str(src), str(dst))
+        assert not src.exists()
+        assert dst.read_text() == "src_data"
+        undo_last()
+        assert src.exists() and src.read_text() == "src_data"
+        assert dst.exists() and dst.read_text() == "dst_data"
+
+
+class TestSessionIsolation:
+    def test_separate_sessions_have_separate_stacks(self, temp_workspace):
+        # 会话 A 创建文件
+        set_active_session("session_a")
+        fa = temp_workspace / "a.txt"
+        create_file(str(fa), "A")
+        assert get_undo_history()["count"] == 1
+
+        # 会话 B 创建文件
+        set_active_session("session_b")
+        fb = temp_workspace / "b.txt"
+        create_file(str(fb), "B")
+        assert get_undo_history()["count"] == 1
+
+        # A 的栈不应受 B 影响
+        set_active_session("session_a")
+        assert get_undo_history()["count"] == 1
+        undo_last()
+        assert not fa.exists()
+
+        # B 的栈仍然完好
+        set_active_session("session_b")
+        assert get_undo_history()["count"] == 1
+
+    def test_clear_undo_stack_by_session(self, temp_workspace):
+        set_active_session("s1")
+        create_file(str(temp_workspace / "s1.txt"))
+        set_active_session("s2")
+        create_file(str(temp_workspace / "s2.txt"))
+
+        clear_undo_stack("s1")
+        set_active_session("s1")
+        assert get_undo_history()["count"] == 0
+        set_active_session("s2")
+        assert get_undo_history()["count"] == 1
+
+    def test_agent_set_session(self):
+        from agent import FileAgent
+        from providers.base import BaseLLMProvider
+
+        class DummyProvider(BaseLLMProvider):
+            def chat_with_tools(self, **kwargs):
+                return {"content": "ok", "tool_calls": []}
+            def chat(self, **kwargs):
+                return "ok"
+
+        agent = FileAgent(DummyProvider(), session_id="sess_1")
+        assert agent.session_id == "sess_1"
+        agent.set_session("sess_2")
+        assert agent.session_id == "sess_2"
+
+
+class TestCleanupOldBackups:
+    def test_cleans_only_old_backups(self, tmp_path, monkeypatch):
+        from file_ops import cleanup_old_backups
+        # 伪造临时目录
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        old_dir = tmp_path / "toolsagent_backup_old"
+        old_dir.mkdir()
+        new_dir = tmp_path / "toolsagent_backup_new"
+        new_dir.mkdir()
+        other_dir = tmp_path / "other_backup"
+        other_dir.mkdir()
+
+        # 伪造旧目录的创建时间
+        old_time = time.time() - 48 * 3600
+        os.utime(old_dir, (old_time, old_time))
+
+        count = cleanup_old_backups(max_age_hours=24)
+        assert count == 1
+        assert not old_dir.exists()
+        assert new_dir.exists()
+        assert other_dir.exists()

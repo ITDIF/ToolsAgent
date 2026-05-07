@@ -3,56 +3,113 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from path_safety import assert_safe_write_path, PathSafetyError
 from config import get_config
 
 
-# 撤销栈 - 存储操作历史，用于撤销
-_UNDO_STACK = []
-_MAX_UNDO = 50  # 最大撤销步数
+# 撤销栈 - 按 session_id 隔离,避免多会话相互覆盖
+_UNDO_STACKS = {}
+_ACTIVE_SESSION_ID = "default"
+_MAX_UNDO = 50  # 单会话最大撤销步数
 _UNDO_LOCK = threading.Lock()
 # 批量上下文:不为 None 时,新写操作的 undo 记录会追加到此 list 而非主栈
 _BATCH_CONTEXT = threading.local()
 
 
+def set_active_session(session_id):
+    """切换当前活动撤销栈所属会话"""
+    global _ACTIVE_SESSION_ID
+    with _UNDO_LOCK:
+        _ACTIVE_SESSION_ID = session_id or "default"
+
+
+def get_active_session():
+    """返回当前活动会话 ID"""
+    return _ACTIVE_SESSION_ID
+
+
+def _active_stack():
+    """返回当前活动会话对应的撤销栈,缺失则创建"""
+    return _UNDO_STACKS.setdefault(_ACTIVE_SESSION_ID, [])
+
+
 def get_undo_stack():
-    """获取撤销栈（用于调试）"""
+    """获取当前活动会话的撤销栈快照"""
     with _UNDO_LOCK:
-        return list(_UNDO_STACK)
+        return list(_active_stack())
 
 
-def clear_undo_stack():
-    """清空撤销栈,同时回收已备份文件"""
+def clear_undo_stack(session_id=None):
+    """清空指定(默认当前活动)会话的撤销栈,回收备份"""
     with _UNDO_LOCK:
-        for action in _UNDO_STACK:
+        sid = session_id or _ACTIVE_SESSION_ID
+        stack = _UNDO_STACKS.get(sid, [])
+        for action in stack:
             _cleanup_action_backup(action)
-        _UNDO_STACK.clear()
+        if sid in _UNDO_STACKS:
+            _UNDO_STACKS[sid] = []
+
+
+def clear_all_undo_stacks():
+    """清空所有会话的撤销栈(主要给测试用)"""
+    with _UNDO_LOCK:
+        for sid, stack in list(_UNDO_STACKS.items()):
+            for action in stack:
+                _cleanup_action_backup(action)
+        _UNDO_STACKS.clear()
+
+
+def cleanup_old_backups(max_age_hours=24):
+    """清理超过 max_age_hours 的临时备份目录(toolsagent_backup_*)"""
+    tmpdir = Path(tempfile.gettempdir())
+    cutoff = time.time() - max_age_hours * 3600
+    count = 0
+    for p in tmpdir.glob("toolsagent_backup_*"):
+        try:
+            if p.is_dir() and p.stat().st_mtime < cutoff:
+                shutil.rmtree(p, ignore_errors=True)
+                count += 1
+        except Exception:
+            pass
+    return count
 
 
 def _cleanup_action_backup(action):
-    """删除 action 占用的备份临时目录"""
-    backup = action.get("backup") if isinstance(action, dict) else None
-    if not backup:
+    """删除 action 占用的所有备份临时目录"""
+    if not isinstance(action, dict):
         return
-    parent = Path(backup).parent
-    try:
-        shutil.rmtree(parent, ignore_errors=True)
-    except Exception:
-        pass
+    # 旧字段: action["backup"] 直接指向 backup_path
+    backup = action.get("backup")
+    if backup:
+        try:
+            shutil.rmtree(Path(backup).parent, ignore_errors=True)
+        except Exception:
+            pass
+    # 新字段: action["dst_snap"] / action["snap"] 内嵌 snapshot
+    for key in ("dst_snap", "snap"):
+        snap = action.get(key)
+        if snap:
+            _cleanup_snapshot(snap)
+    # 批量类型: 递归清理 sub_actions
+    if action.get("type") == "batch":
+        for sub in action.get("sub_actions", []) or []:
+            _cleanup_action_backup(sub)
 
 
 def _push_undo(action):
-    """添加撤销操作。若处于批量上下文则追加到批量 sub_actions,否则进主栈"""
+    """添加撤销操作。若处于批量上下文则追加到批量 sub_actions,否则进当前活动会话栈"""
     sub_actions = getattr(_BATCH_CONTEXT, "sub_actions", None)
     if sub_actions is not None:
         sub_actions.append(action)
         return
     with _UNDO_LOCK:
-        _UNDO_STACK.append(action)
-        while len(_UNDO_STACK) > _MAX_UNDO:
-            old = _UNDO_STACK.pop(0)
+        stack = _active_stack()
+        stack.append(action)
+        while len(stack) > _MAX_UNDO:
+            old = stack.pop(0)
             _cleanup_action_backup(old)
 
 
@@ -65,25 +122,31 @@ def _describe_action(action):
         return f"移动 {action.get('src')} -> {action.get('dst')}"
     if t == "rename":
         return f"重命名 {action.get('src')} -> {action.get('dst')}"
-    if t == "write":
-        return f"覆盖写入 {action.get('path')}"
-    if t == "create_file":
-        return f"创建文件 {action.get('path')}"
-    if t == "create_folder":
-        return f"创建文件夹 {action.get('path')}"
+    if t == "write_target":
+        op = action.get("op") or "写入"
+        return f"{op} {action.get('path')}"
+    if t == "append_truncate":
+        return f"追加写入 {action.get('path')}"
     if t == "copy":
         return f"复制 {action.get('src')} -> {action.get('dst')}"
     if t == "batch":
         subs = action.get("sub_actions", [])
         label = action.get("label") or f"批量操作({len(subs)} 步)"
         return label
+    # 兼容老格式(write/create_file/create_folder)
+    if t == "write":
+        return f"覆盖写入 {action.get('path')}"
+    if t == "create_file":
+        return f"创建文件 {action.get('path')}"
+    if t == "create_folder":
+        return f"创建文件夹 {action.get('path')}"
     return f"未知操作({t})"
 
 
 def get_undo_history(limit=20):
-    """返回撤销栈描述,最近的操作排在前面"""
+    """返回当前活动会话撤销栈描述,最近的操作排在前面"""
     with _UNDO_LOCK:
-        snapshot = list(_UNDO_STACK)
+        snapshot = list(_active_stack())
     items = []
     for idx, action in enumerate(reversed(snapshot[-limit:]), start=1):
         items.append({
@@ -108,6 +171,63 @@ def _backup_file(path):
     return str(backup_path)
 
 
+def _capture_target_state(path):
+    """捕获目标路径写入前的状态,用于事后构造可逆 undo
+
+    返回 {"existed": bool, "is_dir": bool, "backup": str|None}
+    若 existed=False, backup=None;否则 backup 指向临时备份(由 caller 负责清理或交给 undo 流程清理)
+    """
+    p = Path(path)
+    if not p.exists():
+        return {"existed": False, "is_dir": False, "backup": None}
+    return {
+        "existed": True,
+        "is_dir": p.is_dir(),
+        "backup": _backup_file(path),
+    }
+
+
+def _remove_target(path):
+    """统一删除文件或文件夹(用于 undo 内部)"""
+    p = Path(path)
+    if not p.exists() and not p.is_symlink():
+        return
+    if p.is_file() or p.is_symlink():
+        p.unlink()
+    else:
+        shutil.rmtree(p)
+
+
+def _restore_target(path, snapshot):
+    """按 snapshot 把 path 还原回写操作前的状态"""
+    if not snapshot:
+        return
+    _remove_target(path)
+    if snapshot.get("existed") and snapshot.get("backup"):
+        bk = Path(snapshot["backup"])
+        if not bk.exists():
+            return
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if snapshot.get("is_dir"):
+            shutil.copytree(bk, target)
+        else:
+            shutil.copy2(bk, target)
+        shutil.rmtree(bk.parent, ignore_errors=True)
+
+
+def _cleanup_snapshot(snapshot):
+    """释放 snapshot 占用的备份目录(undo 前用)"""
+    if not snapshot:
+        return
+    bk = snapshot.get("backup")
+    if bk:
+        try:
+            shutil.rmtree(Path(bk).parent, ignore_errors=True)
+        except Exception:
+            pass
+
+
 def _apply_undo_action(action):
     """对单个 action 执行撤销;成功返回 (True, message),失败返回 (False, error)"""
     try:
@@ -121,11 +241,57 @@ def _apply_undo_action(action):
                 return True, f"已恢复: {target_path}"
             return False, f"备份缺失,无法恢复: {target_path}"
         if action_type == "move":
+            # 1) 把当前 dst 移回 src
             shutil.move(action["dst"], action["src"])
+            # 2) 若 dst 原本存在,恢复其旧内容
+            dst_snap = action.get("dst_snap")
+            if dst_snap and dst_snap.get("existed"):
+                _restore_target(action["dst"], dst_snap)
             return True, f"已撤销移动: {action['dst']} -> {action['src']}"
         if action_type == "rename":
             Path(action["dst"]).rename(action["src"])
+            dst_snap = action.get("dst_snap")
+            if dst_snap and dst_snap.get("existed"):
+                _restore_target(action["dst"], dst_snap)
             return True, f"已撤销重命名: {action['dst']} -> {action['src']}"
+        if action_type == "copy":
+            # 把当前 dst 移除,并(若有)恢复原 dst
+            dst_snap = action.get("dst_snap")
+            if dst_snap is None:
+                # 老格式: dst 当时不存在,直接删
+                _remove_target(action["dst"])
+            else:
+                _restore_target(action["dst"], dst_snap)
+            return True, f"已撤销复制到: {action['dst']}"
+        if action_type == "write_target":
+            # 统一的写入撤销:create_file/write_file 都走这里
+            _restore_target(action["path"], action.get("snap"))
+            label = action.get("op") or "写入"
+            return True, f"已撤销{label}: {action['path']}"
+        if action_type == "append_truncate":
+            # 追加撤销:截回原长度,或删除新建文件
+            target = Path(action["path"])
+            if not action.get("existed"):
+                target.unlink(missing_ok=True)
+                return True, f"已撤销追加(删除新建文件): {action['path']}"
+            with open(target, "rb+") as f:
+                f.truncate(int(action.get("prev_size", 0)))
+            return True, f"已撤销追加: {action['path']}"
+        if action_type == "batch":
+            sub_actions = list(action.get("sub_actions", []))
+            sub_results = []
+            all_ok = True
+            for sub in reversed(sub_actions):
+                ok, msg = _apply_undo_action(sub)
+                sub_results.append({"success": ok, "message": msg})
+                if not ok:
+                    all_ok = False
+            label = action.get("label") or f"批量操作({len(sub_actions)} 步)"
+            return all_ok, {
+                "label": label,
+                "sub_results": sub_results,
+            }
+        # ----- 兼容老的 action 类型(在迁移期保留) -----
         if action_type == "write":
             backup_path = action.get("backup")
             target_path = action["path"]
@@ -142,29 +308,6 @@ def _apply_undo_action(action):
             if folder.exists():
                 shutil.rmtree(folder)
             return True, f"已删除创建的文件夹: {action['path']}"
-        if action_type == "copy":
-            dst_path = Path(action["dst"])
-            if dst_path.exists():
-                if dst_path.is_file():
-                    dst_path.unlink()
-                else:
-                    shutil.rmtree(dst_path)
-            return True, f"已删除复制的文件: {action['dst']}"
-        if action_type == "batch":
-            # 倒序撤销 sub_actions,允许部分失败,收集结果
-            sub_actions = list(action.get("sub_actions", []))
-            sub_results = []
-            all_ok = True
-            for sub in reversed(sub_actions):
-                ok, msg = _apply_undo_action(sub)
-                sub_results.append({"success": ok, "message": msg})
-                if not ok:
-                    all_ok = False
-            label = action.get("label") or f"批量操作({len(sub_actions)} 步)"
-            return all_ok, {
-                "label": label,
-                "sub_results": sub_results,
-            }
         return False, f"未知的撤销操作类型: {action_type}"
     except Exception as e:
         return False, f"撤销失败: {str(e)}"
@@ -183,9 +326,10 @@ def undo_last(count=1):
     failures = 0
     for _ in range(count):
         with _UNDO_LOCK:
-            if not _UNDO_STACK:
+            stack = _active_stack()
+            if not stack:
                 break
-            action = _UNDO_STACK.pop()
+            action = stack.pop()
         ok, payload = _apply_undo_action(action)
         if not ok:
             # 失败时保留剩余记录,不放回栈(放回会导致重复触发同样错误)
@@ -227,15 +371,18 @@ def move_file(src, dst):
     if err:
         return err
 
+    dst_snap = _capture_target_state(dst)
     try:
         shutil.move(str(src_path), str(dst_path))
         _push_undo({
             "type": "move",
             "src": src,
-            "dst": dst
+            "dst": dst,
+            "dst_snap": dst_snap,
         })
         return {"success": True, "message": f"已移动: {src} -> {dst}"}
     except Exception as e:
+        _cleanup_snapshot(dst_snap)
         return {"success": False, "error": str(e)}
 
 
@@ -251,7 +398,11 @@ def copy_file(src, dst):
     if err:
         return err
 
+    dst_snap = _capture_target_state(dst)
     try:
+        if dst_snap["existed"]:
+            # shutil.copytree 不允许覆盖,先清空 dst 再复制
+            _remove_target(dst)
         if src_path.is_file():
             shutil.copy2(str(src_path), str(dst_path))
         else:
@@ -259,10 +410,13 @@ def copy_file(src, dst):
         _push_undo({
             "type": "copy",
             "src": src,
-            "dst": dst
+            "dst": dst,
+            "dst_snap": dst_snap,
         })
         return {"success": True, "message": f"已复制: {src} -> {dst}"}
     except Exception as e:
+        # 失败时尽力还原
+        _restore_target(dst, dst_snap)
         return {"success": False, "error": str(e)}
 
 
@@ -307,8 +461,10 @@ def create_folder(path):
         folder_path.mkdir(parents=True, exist_ok=True)
         if not existed:
             _push_undo({
-                "type": "create_folder",
-                "path": path
+                "type": "write_target",
+                "path": path,
+                "op": "创建文件夹",
+                "snap": {"existed": False, "is_dir": False, "backup": None},
             })
         return {"success": True, "message": f"已创建文件夹: {path}"}
     except Exception as e:
@@ -316,26 +472,27 @@ def create_folder(path):
 
 
 def create_file(path, content=""):
-    """创建文件，可指定内容"""
+    """创建文件,可指定内容。若目标已存在则备份原内容,撤销时可还原"""
     file_path = Path(path)
 
     err = _safety_check(path)
     if err:
         return err
 
+    snap = _capture_target_state(path)
     try:
-        existed = file_path.exists()
-        # 确保父目录存在
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        # 写入文件
         file_path.write_text(content, encoding="utf-8")
-        if not existed:
-            _push_undo({
-                "type": "create_file",
-                "path": path
-            })
-        return {"success": True, "message": f"已创建文件: {path}"}
+        _push_undo({
+            "type": "write_target",
+            "path": path,
+            "op": "覆盖创建" if snap["existed"] else "创建文件",
+            "snap": snap,
+        })
+        msg = "已覆盖创建" if snap["existed"] else "已创建文件"
+        return {"success": True, "message": f"{msg}: {path}"}
     except Exception as e:
+        _cleanup_snapshot(snap)
         return {"success": False, "error": str(e)}
 
 
@@ -369,7 +526,10 @@ def read_file(path):
 
 
 def write_file(path, content, append=False):
-    """写入文件内容，支持覆盖或追加"""
+    """写入文件内容,支持覆盖或追加。两种模式都支持撤销:
+    - 覆盖: 备份原内容,撤销时还原(若文件原本不存在,撤销时直接删除)
+    - 追加: 记录原文件长度,撤销时截断到原长度(若文件原本不存在,撤销时删除)
+    """
     file_path = Path(path)
 
     err = _safety_check(path)
@@ -377,26 +537,32 @@ def write_file(path, content, append=False):
         return err
 
     try:
-        # 确保父目录存在
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        # 备份原文件（如果存在）
-        backup_path = None
-        if file_path.exists():
-            backup_path = _backup_file(path)
-        # 写入文件
         if append:
+            existed = file_path.exists()
+            prev_size = file_path.stat().st_size if existed else 0
             with open(file_path, "a", encoding="utf-8") as f:
                 f.write(content)
-        else:
-            file_path.write_text(content, encoding="utf-8")
-        if not append and backup_path:
             _push_undo({
-                "type": "write",
+                "type": "append_truncate",
                 "path": path,
-                "backup": backup_path
+                "existed": existed,
+                "prev_size": prev_size,
             })
-        mode = "追加" if append else "覆盖"
-        return {"success": True, "message": f"已{mode}文件: {path}"}
+            return {"success": True, "message": f"已追加文件: {path}"}
+        snap = _capture_target_state(path)
+        try:
+            file_path.write_text(content, encoding="utf-8")
+        except Exception:
+            _cleanup_snapshot(snap)
+            raise
+        _push_undo({
+            "type": "write_target",
+            "path": path,
+            "op": "覆盖写入" if snap["existed"] else "新建写入",
+            "snap": snap,
+        })
+        return {"success": True, "message": f"已覆盖文件: {path}"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -413,19 +579,27 @@ def rename_file(src, dst):
     if err:
         return err
 
+    dst_snap = _capture_target_state(dst)
     try:
+        # POSIX 下 Path.rename 会原子覆盖目标,先备份后再 rename;
+        # Windows 下若 dst 已存在会抛 FileExistsError,清掉 dst 之后再 rename
+        if dst_snap["existed"]:
+            _remove_target(dst)
         src_path.rename(dst_path)
         _push_undo({
             "type": "rename",
             "src": src,
-            "dst": dst
+            "dst": dst,
+            "dst_snap": dst_snap,
         })
         return {"success": True, "message": f"已重命名: {src} -> {dst}"}
     except Exception as e:
+        # 失败时尝试还原 dst 原内容
+        _restore_target(dst, dst_snap)
         return {"success": False, "error": str(e)}
 
 
-def search_files(path, pattern, search_type="all"):
+def search_files(pattern, path=".", search_type="all"):
     """搜索文件/文件夹，支持按名称匹配"""
     dir_path = Path(path)
 
@@ -435,14 +609,20 @@ def search_files(path, pattern, search_type="all"):
     cfg = get_config()
     max_results = int(cfg.get("max_search_results", 100))
     max_depth = int(cfg.get("max_search_depth", 10))
+    tool_timeout = float(cfg.get("tool_timeout", 30))
     base_depth = len(dir_path.resolve().parts)
 
     try:
         results = []
         truncated = False
         pattern_lower = pattern.lower()
+        start_time = time.time()
 
         for root, dirs, files in os.walk(dir_path):
+            if time.time() - start_time > tool_timeout:
+                truncated = True
+                break
+
             cur_depth = len(Path(root).resolve().parts) - base_depth
             if cur_depth >= max_depth:
                 # 达到深度上限,不再继续向下
@@ -520,14 +700,21 @@ def scan_disk(path=".", max_depth=None, max_results=None, min_size=0):
     cfg = get_config()
     max_depth = int(max_depth if max_depth is not None else cfg.get("max_search_depth", 10))
     max_results = int(max_results if max_results is not None else cfg.get("max_search_results", 100))
+    tool_timeout = float(cfg.get("tool_timeout", 30))
     min_size = int(min_size)
 
     base = str(dir_path.resolve())
     base_depth = len(dir_path.resolve().parts)
     sizes = {}
+    truncated = False
+    start_time = time.time()
 
     try:
         for root, dirs, files in os.walk(base):
+            if time.time() - start_time > tool_timeout:
+                truncated = True
+                break
+
             cur_depth = len(Path(root).resolve().parts) - base_depth
             if cur_depth >= max_depth:
                 dirs[:] = []
@@ -562,15 +749,15 @@ def scan_disk(path=".", max_depth=None, max_results=None, min_size=0):
         ]
         items.sort(key=lambda x: x["size_bytes"], reverse=True)
 
-        truncated = len(items) > max_results
-        if truncated:
+        truncated_by_results = len(items) > max_results
+        if truncated_by_results:
             items = items[:max_results]
 
         return {
             "success": True,
             "path": path,
             "items": items,
-            "truncated": truncated,
+            "truncated": truncated or truncated_by_results,
             "count": len(items),
         }
     except Exception as e:

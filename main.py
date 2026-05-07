@@ -15,6 +15,7 @@ from agent import FileAgent
 from session import generate_session_id, save_session, load_session, list_sessions
 from utils import get_recent_logs, cleanup_old_logs
 from config import get_config
+from file_ops import cleanup_old_backups
 
 
 # 模型 Provider 注册表(主键即菜单顺序)
@@ -240,8 +241,9 @@ def main():
     config = get_config()
     default_model = config.get("default_model", "mimo-v2.5")
 
-    # 启动时清理过期日志
+    # 启动时清理过期日志与旧备份
     cleanup_old_logs(config.get("log_retention_days", 30))
+    cleanup_old_backups()
 
     # 尝试使用默认模型
     provider = create_provider(default_model)
@@ -258,7 +260,7 @@ def main():
 
     # 默认新建会话
     session_id = generate_session_id()
-    agent = FileAgent(provider)
+    agent = FileAgent(provider, session_id=session_id)
 
     print(f"\n新会话已创建，ID: {session_id}")
     _print_help()
@@ -288,6 +290,7 @@ def main():
                     sid, msgs = _cmd_history(agent)
                     if sid and msgs is not None:
                         session_id = sid
+                        agent.set_session(sid)
                         agent.messages = msgs
                     continue
                 elif cmd == "logs":
@@ -303,7 +306,8 @@ def main():
                     _print_help()
                     continue
                 elif cmd == "undo":
-                    from file_ops import undo_last
+                    from file_ops import undo_last, set_active_session
+                    set_active_session(agent.session_id)
                     count = 1
                     if arg_str:
                         try:
@@ -329,7 +333,8 @@ def main():
                         print(f"撤销失败: {result.get('error')}")
                     continue
                 elif cmd in ("undo-list", "undolist"):
-                    from file_ops import get_undo_history
+                    from file_ops import get_undo_history, set_active_session
+                    set_active_session(agent.session_id)
                     h = get_undo_history()
                     if not h["items"]:
                         print("撤销栈为空")

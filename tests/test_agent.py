@@ -1,4 +1,5 @@
 import pytest
+import agent as agent_module
 from agent import FileAgent
 from providers.base import BaseLLMProvider
 
@@ -57,14 +58,14 @@ class TestConfirm:
 
 
 class TestMaxIterations:
-    def test_max_iterations_fallback(self):
+    def test_max_iterations_fallback(self, monkeypatch):
         responses = [
             {"content": "", "tool_calls": [{"id": f"t{i}", "name": "list_files", "arguments": {"path": "."}}]}
             for i in range(10)
         ]
         provider = MockProvider(responses=responses, final_chat="fallback")
         agent = FileAgent(provider)
-        agent.config["max_tool_iterations"] = 2
+        monkeypatch.setattr(agent_module, "get_config", lambda: {"max_tool_iterations": 2})
         result = agent.process("loop", confirm_required=False)
         assert result == "fallback"
 
@@ -85,31 +86,32 @@ class TestNeedConfirmBatch:
     def _agent(self):
         return FileAgent(MockProvider())
 
-    def test_batch_with_delete_needs_confirm(self):
+    def test_batch_with_delete_needs_confirm(self, monkeypatch):
         agent = self._agent()
-        agent.config["confirm_delete"] = True
+        monkeypatch.setattr(agent_module, "get_config", lambda: {"confirm_delete": True, "confirm_overwrite": True})
         ops = [
             {"tool": "create_file", "arguments": {"path": "/tmp/a"}},
             {"tool": "delete_file", "arguments": {"path": "/tmp/b"}},
         ]
         assert agent._need_confirm("batch_operations", {"operations": ops}) is True
 
-    def test_batch_without_sensitive_ops_no_confirm(self):
+    def test_batch_without_sensitive_ops_no_confirm(self, monkeypatch):
         agent = self._agent()
+        monkeypatch.setattr(agent_module, "get_config", lambda: {"confirm_delete": True, "confirm_overwrite": True})
         ops = [
             {"tool": "create_file", "arguments": {"path": "/tmp/a"}},
             {"tool": "create_folder", "arguments": {"path": "/tmp/b"}},
         ]
         assert agent._need_confirm("batch_operations", {"operations": ops}) is False
 
-    def test_batch_with_overwrite_respects_config(self):
+    def test_batch_with_overwrite_respects_config(self, monkeypatch):
         agent = self._agent()
-        agent.config["confirm_overwrite"] = False
+        monkeypatch.setattr(agent_module, "get_config", lambda: {"confirm_delete": True, "confirm_overwrite": False})
         ops = [
             {"tool": "write_file", "arguments": {"path": "/tmp/a", "content": "x"}},
         ]
         assert agent._need_confirm("batch_operations", {"operations": ops}) is False
-        agent.config["confirm_overwrite"] = True
+        monkeypatch.setattr(agent_module, "get_config", lambda: {"confirm_delete": True, "confirm_overwrite": True})
         assert agent._need_confirm("batch_operations", {"operations": ops}) is True
 
 

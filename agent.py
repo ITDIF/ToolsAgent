@@ -1,7 +1,7 @@
 
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from file_ops import TOOL_REGISTRY, TOOL_SCHEMAS
+from file_ops import TOOL_REGISTRY, TOOL_SCHEMAS, set_active_session
 from utils import log_action
 from config import get_config
 
@@ -34,11 +34,15 @@ SYSTEM_PROMPT = """你是一个本地文件操作助手。你可以帮助用户�
 class FileAgent:
     """文件操作代理"""
 
-    def __init__(self, llm_provider):
+    def __init__(self, llm_provider, session_id=None):
         self.llm = llm_provider
         self.messages = []
-        self.config = get_config()
         self.total_tokens = {"input": 0, "output": 0, "total": 0}
+        self.session_id = session_id or "default"
+
+    def set_session(self, session_id):
+        """切换当前会话 ID,后续工具调用会使用对应的撤销栈"""
+        self.session_id = session_id or "default"
 
     def get_token_usage(self):
         """获取 token 使用统计"""
@@ -54,10 +58,11 @@ class FileAgent:
 
     def _need_confirm(self, tool_name, tool_args):
         """根据 config 判断该工具调用是否需要用户确认"""
+        cfg = get_config()
         if tool_name == "delete_file":
-            return self.config.get("confirm_delete", True)
+            return cfg.get("confirm_delete", True)
         if tool_name == "write_file" and not tool_args.get("append", False):
-            return self.config.get("confirm_overwrite", True)
+            return cfg.get("confirm_overwrite", True)
         if tool_name == "batch_operations":
             # 任一子操作需要确认,批量整体就需要确认
             for op in tool_args.get("operations", []) or []:
@@ -71,7 +76,7 @@ class FileAgent:
         """执行单个工具调用,返回结果 dict"""
         if tool_name not in TOOL_REGISTRY:
             return {"success": False, "error": "未知工具"}
-        timeout = self.config.get("tool_timeout", 30)
+        timeout = get_config().get("tool_timeout", 30)
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(TOOL_REGISTRY[tool_name], **tool_args)
@@ -100,10 +105,12 @@ class FileAgent:
 
     def process(self, user_input, confirm_required=True):
         """处理用户输入,支持多轮工具调用直到模型给出最终回复"""
+        set_active_session(self.session_id)
         self.messages.append({"role": "user", "content": user_input})
-        max_iterations = int(self.config.get("max_tool_iterations", 8))
-        max_time = float(self.config.get("max_request_time", 300))
         start_time = time.time()
+        cfg = get_config()
+        max_iterations = int(cfg.get("max_tool_iterations", 8))
+        max_time = float(cfg.get("max_request_time", 300))
 
         for _ in range(max_iterations):
             if time.time() - start_time > max_time:

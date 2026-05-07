@@ -144,7 +144,7 @@ class TestSearchFiles:
         for name in ["a.txt", "b.log", "c.txt"]:
             with open(os.path.join(tmp_dir, name), "w") as f:
                 f.write("test")
-        result = search_files(tmp_dir, ".txt")
+        result = search_files(pattern=".txt", path=tmp_dir)
         assert result["success"] is True
         assert len(result["results"]) == 2
 
@@ -152,7 +152,7 @@ class TestSearchFiles:
         os.makedirs(os.path.join(tmp_dir, "subdir"))
         with open(os.path.join(tmp_dir, "file.txt"), "w") as f:
             f.write("test")
-        result = search_files(tmp_dir, "sub", search_type="folder")
+        result = search_files(pattern="sub", path=tmp_dir, search_type="folder")
         assert result["success"] is True
         assert len(result["results"]) == 1
 
