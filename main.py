@@ -15,7 +15,7 @@ from agent import FileAgent
 from session import generate_session_id, save_session, load_session, list_sessions
 from utils import get_recent_logs, cleanup_old_logs
 from config import get_config
-from file_ops import cleanup_old_backups
+from undo_manager import cleanup_old_backups
 
 
 class _C:
@@ -307,7 +307,7 @@ def main():
                     _print_help()
                     continue
                 elif cmd in ["undo", "u"]:
-                    from file_ops import undo_last, set_active_session
+                    from undo_manager import undo_last, set_active_session
                     set_active_session(agent.session_id)
                     count = 1
                     if arg_str:
@@ -334,7 +334,7 @@ def main():
                         print(f"{_C.RED}撤销失败: {result.get('error')}{_C.RESET}")
                     continue
                 elif cmd in ("undo-list", "undolist", "ul"):
-                    from file_ops import get_undo_history, set_active_session
+                    from undo_manager import get_undo_history, set_active_session
                     set_active_session(agent.session_id)
                     h = get_undo_history()
                     if not h["items"]:

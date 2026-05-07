@@ -2,10 +2,14 @@
 import sys
 import threading
 import time
+import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from file_ops import TOOL_REGISTRY, TOOL_SCHEMAS, set_active_session
+from file_ops import TOOL_REGISTRY, TOOL_SCHEMAS
+from undo_manager import set_active_session
 from utils import log_action
 from config import get_config
+
+logger = logging.getLogger(__name__)
 
 
 def _thinking_animation(stop_event):
@@ -91,10 +95,21 @@ class FileAgent:
                     return True
         return False
 
-    def _execute_tool(self, tool_name, tool_args):
-        """执行单个工具调用,返回结果 dict"""
+    def _execute_tool(self, tool_name: str, tool_args: dict) -> dict:
+        """执行单个工具调用,返回结果 dict
+
+        Args:
+            tool_name: 工具名称
+            tool_args: 工具参数
+
+        Returns:
+            {"success": bool, "message": str, "error": str, ...}
+        """
         if tool_name not in TOOL_REGISTRY:
-            return {"success": False, "error": "未知工具"}
+            error_msg = f"未知工具: {tool_name}"
+            logger.warning(error_msg)
+            return {"success": False, "error": error_msg}
+
         timeout = get_config().get("tool_timeout", 30)
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
@@ -103,9 +118,17 @@ class FileAgent:
             log_action(tool_name, tool_args, result)
             return result
         except FuturesTimeoutError:
-            return {"success": False, "error": f"工具执行超时（{timeout}秒）"}
+            error_msg = f"工具执行超时（{timeout}秒）: {tool_name}"
+            logger.warning(error_msg)
+            return {"success": False, "error": error_msg}
         except TypeError as e:
-            return {"success": False, "error": f"工具参数错误: {e}"}
+            error_msg = f"工具参数错误 [{tool_name}]: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+        except Exception as e:
+            error_msg = f"工具执行异常 [{tool_name}]: {e}"
+            logger.exception(error_msg)
+            return {"success": False, "error": error_msg}
 
     def _handle_tool_calls(self, tool_calls, confirm_required, confirmed_operations=None):
         """对一组 tool_calls 依次取得用户确认并执行,返回 [(tool_call, result)]

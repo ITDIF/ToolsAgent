@@ -7,8 +7,10 @@ import pytest
 from file_ops import (
     move_file, copy_file, delete_file, create_folder, create_file,
     write_file, rename_file, extract_archive, create_archive, undo_last,
-    get_undo_stack, clear_undo_stack, get_undo_history, batch_operations,
-    set_active_session, cleanup_old_backups
+    get_undo_history, batch_operations
+)
+from undo_manager import (
+    get_undo_stack, clear_undo_stack, set_active_session, cleanup_old_backups
 )
 
 
@@ -469,7 +471,7 @@ class TestSessionIsolation:
 
 class TestCleanupOldBackups:
     def test_cleans_only_old_backups(self, tmp_path, monkeypatch):
-        from file_ops import cleanup_old_backups
+        from undo_manager import cleanup_old_backups
         # 伪造临时目录
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
         old_dir = tmp_path / "toolsagent_backup_old"

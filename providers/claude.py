@@ -2,6 +2,7 @@
 import os
 import json
 import anthropic
+from typing import Dict, Any, List, Optional
 
 from .base import BaseLLMProvider
 
@@ -9,14 +10,22 @@ from .base import BaseLLMProvider
 class ClaudeProvider(BaseLLMProvider):
     """Claude API Provider"""
 
-    def __init__(self, api_key=None, model="claude-sonnet-4-6"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "claude-sonnet-4-6"):
         super().__init__()
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         self.model = model
         self.client = anthropic.Anthropic(api_key=self.api_key, max_retries=self.max_retries, timeout=self.timeout)
 
-    def build_assistant_message(self, content, tool_calls):
-        """Anthropic: assistant 消息 content 是 block 数组,工具调用以 tool_use block 表达"""
+    def build_assistant_message(self, content: Optional[str], tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Anthropic: assistant 消息 content 是 block 数组,工具调用以 tool_use block 表达
+
+        Args:
+            content: 助手回复内容
+            tool_calls: 工具调用列表
+
+        Returns:
+            Anthropic 格式的消息列表
+        """
         blocks = []
         if content:
             blocks.append({"type": "text", "text": content})
@@ -31,8 +40,15 @@ class ClaudeProvider(BaseLLMProvider):
             return []
         return [{"role": "assistant", "content": blocks}]
 
-    def build_tool_result_messages(self, tool_results):
-        """Anthropic: 工具结果作为 user 消息中的 tool_result block 数组返回"""
+    def build_tool_result_messages(self, tool_results: List[tuple[Dict[str, Any], Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Anthropic: 工具结果作为 user 消息中的 tool_result block 数组返回
+
+        Args:
+            tool_results: [(tool_call_dict, result_dict), ...]
+
+        Returns:
+            Anthropic 格式的消息列表
+        """
         if not tool_results:
             return []
         blocks = [
@@ -47,11 +63,11 @@ class ClaudeProvider(BaseLLMProvider):
 
     def chat_with_tools(
         self,
-        messages,
-        tools,
-        system_prompt=None,
-        **kwargs
-    ):
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        system_prompt: Optional[str] = None,
+        **kwargs: Any
+    ) -> Dict[str, Any]:
         params = {
             "model": self.model,
             "messages": messages,
@@ -89,10 +105,10 @@ class ClaudeProvider(BaseLLMProvider):
 
     def chat(
         self,
-        messages,
-        system_prompt=None,
-        **kwargs
-    ):
+        messages: List[Dict[str, Any]],
+        system_prompt: Optional[str] = None,
+        **kwargs: Any
+    ) -> str:
         params = {
             "model": self.model,
             "messages": messages,

@@ -4,6 +4,7 @@ import datetime
 import re
 import logging
 from pathlib import Path
+from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +24,15 @@ def get_log_path():
     return get_log_dir() / f"{date_str}.jsonl"
 
 
-def cleanup_old_logs(retention_days):
-    """删除超过保留天数的日志文件"""
+def cleanup_old_logs(retention_days: int) -> int:
+    """删除超过保留天数的日志文件
+
+    Args:
+        retention_days: 保留天数
+
+    Returns:
+        删除的文件数量
+    """
     if not retention_days or retention_days <= 0:
         return 0
     cutoff = datetime.date.today() - datetime.timedelta(days=int(retention_days))
@@ -47,8 +55,14 @@ def cleanup_old_logs(retention_days):
     return removed
 
 
-def log_action(action_type, params, result):
-    """记录操作日志"""
+def log_action(action_type: str, params: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """记录操作日志
+
+    Args:
+        action_type: 操作类型
+        params: 操作参数
+        result: 操作结果
+    """
     log_path = get_log_path()
 
     log_entry = {
@@ -65,15 +79,22 @@ def log_action(action_type, params, result):
         logger.warning("log_action(%s) failed: %s", action_type, e)
 
 
-def get_recent_logs(limit=10):
-    """获取最近的操作记录"""
+def get_recent_logs(limit: int = 10) -> List[Dict[str, Any]]:
+    """获取最近的操作记录
+
+    Args:
+        limit: 返回的最大记录数
+
+    Returns:
+        日志记录列表
+    """
     log_path = get_log_path()
 
     if not log_path.exists():
         return []
 
     try:
-        logs = []
+        logs: List[Dict[str, Any]] = []
         with open(log_path, "rb") as f:
             # 移动到文件末尾
             f.seek(0, 2)

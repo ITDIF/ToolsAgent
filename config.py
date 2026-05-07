@@ -2,10 +2,11 @@
 import json
 import logging
 from pathlib import Path
+from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: Dict[str, Any] = {
     "tool_timeout": 30,
     "default_model": "mimo-v2.5",
     "log_retention_days": 30,
@@ -21,12 +22,16 @@ DEFAULT_CONFIG = {
 
 CONFIG_PATH = Path.home() / ".toolsagent" / "config.json"
 
-_cached_config = None
-_cached_mtime = None
+_cached_config: Optional[Dict[str, Any]] = None
+_cached_mtime: Optional[float] = None
 
 
-def load_config():
-    """加载配置，不存在则使用默认值"""
+def load_config() -> Dict[str, Any]:
+    """加载配置，不存在则使用默认值
+
+    Returns:
+        配置字典
+    """
     config = DEFAULT_CONFIG.copy()
 
     if CONFIG_PATH.exists():
@@ -40,8 +45,12 @@ def load_config():
     return config
 
 
-def save_config(config):
-    """保存配置"""
+def save_config(config: Dict[str, Any]) -> None:
+    """保存配置
+
+    Args:
+        config: 配置字典
+    """
     global _cached_config, _cached_mtime
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -50,8 +59,12 @@ def save_config(config):
     _cached_mtime = None
 
 
-def get_config():
-    """获取当前配置，带 mtime 缓存，避免频繁读盘"""
+def get_config() -> Dict[str, Any]:
+    """获取当前配置，带 mtime 缓存，避免频繁读盘
+
+    Returns:
+        配置字典的副本
+    """
     global _cached_config, _cached_mtime
     mtime = None
     if CONFIG_PATH.exists():
