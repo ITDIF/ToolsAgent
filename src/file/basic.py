@@ -1,4 +1,5 @@
 import os
+import sys
 import shutil
 import time
 from pathlib import Path
@@ -491,7 +492,8 @@ def scan_disk(
 def batch_operations(
     operations: List[Dict[str, Any]],
     stop_on_error: bool = True,
-    label: Optional[str] = None
+    label: Optional[str] = None,
+    interactive: bool = False
 ) -> Dict[str, Any]:
     """批量执行多个文件操作,作为一个整体进入撤销栈。
 
@@ -499,6 +501,7 @@ def batch_operations(
         operations: [{"tool": "...", "arguments": {...}}]
         stop_on_error: True 则首个失败就中断后续步骤;False 则尽力执行所有步骤
         label: 撤销历史中显示的标签
+        interactive: 是否显示进度信息（用于交互式模式）
 
     Returns:
         每一步的结果,以及整体成功/失败标志
@@ -517,10 +520,22 @@ def batch_operations(
     halted_index = None
 
     try:
+        total_ops = len(operations)
+
+        # 如果是交互式模式且操作数量较多，显示进度
+        if interactive and total_ops > 1:
+            print(f"\033[90m  批量执行 {total_ops} 个操作...\033[0m", flush=True)
+
         for i, op in enumerate(operations):
+            # 显示进度
+            if interactive and total_ops > 1:
+                progress = f"[{i+1}/{total_ops}]"
+
             if not isinstance(op, dict):
                 results.append({"index": i, "success": False, "error": "operation 必须是对象"})
                 failures += 1
+                if interactive:
+                    print(f"  {progress} ❌ 错误: 操作格式不正确")
                 if stop_on_error:
                     halted_index = i
                     break
@@ -534,6 +549,8 @@ def batch_operations(
                     "success": False, "error": f"工具 {tool_name} 不允许在批量中调用"
                 })
                 failures += 1
+                if interactive:
+                    print(f"  {progress} ❌ {tool_name}: 不允许在批量中调用")
                 if stop_on_error:
                     halted_index = i
                     break
@@ -544,6 +561,8 @@ def batch_operations(
                     "success": False, "error": "arguments 必须是对象"
                 })
                 failures += 1
+                if interactive:
+                    print(f"  {progress} ❌ {tool_name}: 参数格式错误")
                 if stop_on_error:
                     halted_index = i
                     break
@@ -559,6 +578,20 @@ def batch_operations(
             entry = {"index": i, "tool": tool_name, "result": step_result,
                      "success": bool(step_result.get("success"))}
             results.append(entry)
+
+            # 更新进度显示
+            if interactive:
+                if entry["success"]:
+                    msg = step_result.get("message", "")
+                    if len(msg) > 50:
+                        msg = msg[:47] + "..."
+                    print(f"  {progress} ✅ {msg}")
+                else:
+                    err = step_result.get("error", "未知错误")
+                    if len(err) > 50:
+                        err = err[:47] + "..."
+                    print(f"  {progress} ❌ {err}")
+
             if not entry["success"]:
                 failures += 1
                 if stop_on_error:
@@ -566,6 +599,13 @@ def batch_operations(
                     break
     finally:
         _clear_batch_context()
+
+    # 显示最终结果
+    if interactive and total_ops > 1:
+        if failures == 0:
+            print(f"\033[90m  全部完成 ({total_ops} 个操作) ✓\033[0m")
+        else:
+            print(f"\033[90m  完成 {total_ops - failures}/{total_ops} 个操作, {failures} 个失败\033[0m")
 
     # 仅当至少有一步成功且产生了 sub_action 时才入栈
     if sub_actions:
@@ -823,4 +863,3 @@ TOOL_SCHEMAS = [
         }
     }
 ]
-

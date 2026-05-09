@@ -63,7 +63,7 @@ class FileAgent:
         self.total_tokens = {"input": 0, "output": 0, "total": 0}
         self.session_id = session_id or "default"
         self.interactive = interactive
-        # 本次进程生命周期内已被"会话级"授权的工具类型集合
+        # 本次进程生命周期内已被\"会话级\"授权的工具类型集合
         # 切换 session_id / 模型时不清空,仅在进程退出时丢失
         self.session_authorized_tools: set[str] = set()
 
@@ -78,10 +78,6 @@ class FileAgent:
         return n
 
     def _is_session_authorized(self, tool_name: str, tool_args: dict) -> bool:
-        """判断该工具调用是否已在本次会话中被整体授权
-        - 普通工具: 工具类型在授权集中即视为已授权
-        - batch_operations: 内部所有需要确认的子工具类型必须都在授权集中
-        """
         if tool_name == "batch_operations":
             for op in tool_args.get("operations", []) or []:
                 if not isinstance(op, dict):
@@ -94,9 +90,6 @@ class FileAgent:
         return tool_name in self.session_authorized_tools
 
     def _add_session_authorization(self, tool_name: str, tool_args: dict) -> None:
-        """将工具类型加入会话级授权集
-        - batch_operations: 把内部所有需要确认的子工具类型一并加入
-        """
         if tool_name == "batch_operations":
             for op in tool_args.get("operations", []) or []:
                 if not isinstance(op, dict):
@@ -129,7 +122,6 @@ class FileAgent:
         if tool_name == "write_file" and not tool_args.get("append", False):
             return cfg.get("confirm_overwrite", True)
         if tool_name == "batch_operations":
-            # 任一子操作需要确认,批量整体就需要确认
             for op in tool_args.get("operations", []) or []:
                 if not isinstance(op, dict):
                     continue
@@ -138,24 +130,20 @@ class FileAgent:
         return False
 
     def _execute_tool(self, tool_name: str, tool_args: dict) -> dict:
-        """执行单个工具调用,返回结果 dict
-
-        Args:
-            tool_name: 工具名称
-            tool_args: 工具参数
-
-        Returns:
-            {"success": bool, "message": str, "error": str, ...}
-        """
+        """执行单个工具调用,返回结果 dict"""
         if tool_name not in TOOL_REGISTRY:
             error_msg = f"未知工具: {tool_name}"
             logger.warning(error_msg)
             return {"success": False, "error": error_msg}
 
         timeout = get_config().get("tool_timeout", ConfigDefaults.TOOL_TIMEOUT)
+        # 对 batch_operations 自动注入 interactive 参数以显示进度
+        effective_args = dict(tool_args)
+        if tool_name == "batch_operations" and self.interactive:
+            effective_args["interactive"] = True
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(TOOL_REGISTRY[tool_name], **tool_args)
+                future = executor.submit(TOOL_REGISTRY[tool_name], **effective_args)
                 result = future.result(timeout=timeout)
             log_action(tool_name, tool_args, result)
             return result
@@ -173,10 +161,7 @@ class FileAgent:
             return {"success": False, "error": error_msg}
 
     def _handle_tool_calls(self, tool_calls, confirm_required, confirmed_operations=None):
-        """对一组 tool_calls 依次取得用户确认并执行,返回 [(tool_call, result)]
-
-        confirmed_operations: 已确认的操作集合，用于避免重复询问相同操作
-        """
+        """对一组 tool_calls 依次取得用户确认并执行,返回 [(tool_call, result)]"""
         if confirmed_operations is None:
             confirmed_operations = set()
         executed = []
@@ -185,23 +170,18 @@ class FileAgent:
             tool_args = tool_call["arguments"]
             desc = self._format_tool_call(tool_name, tool_args)
 
-            # 生成操作标识用于去重
             operation_key = f"{tool_name}:{tuple(sorted((k, str(v)) for k, v in tool_args.items()))}"
 
             need_confirm = confirm_required and self._need_confirm(tool_name, tool_args)
 
-            # 如果是需要确认的操作，检查是否已经确认过了
             if need_confirm:
                 if self._is_session_authorized(tool_name, tool_args):
-                    # 本次会话已授权,跳过询问
                     if self.interactive:
                         print(f"  ⎿  {desc} … (会话已授权)")
                 elif operation_key in confirmed_operations:
-                    # 本次请求已确认过,跳过再次询问
                     if self.interactive:
                         print(f"  ⎿  {desc} … (已确认)")
                 else:
-                    # 还没确认过,弹出方向键选择菜单
                     if self.interactive:
                         print(f"  ⎿  {desc}")
                     choice = select_option(
@@ -217,13 +197,11 @@ class FileAgent:
                     elif choice == 0:
                         confirmed_operations.add(operation_key)
                     else:
-                        # choice == 2 (取消) 或 None (ESC/Ctrl+C)
                         if self.interactive:
                             print("  ⎿  Cancelled")
                         executed.append((tool_call, {"success": False, "error": "用户取消操作"}))
                         continue
             else:
-                # 不需要确认的操作
                 if self.interactive:
                     print(f"  ⎿  {desc} …")
 
@@ -247,7 +225,6 @@ class FileAgent:
         max_iterations = int(cfg.get("max_tool_iterations", ConfigDefaults.MAX_TOOL_ITERATIONS))
         max_time = float(cfg.get("max_request_time", ConfigDefaults.MAX_REQUEST_TIME))
 
-        # 在同一次请求中记录已确认的操作，避免重复询问
         confirmed_operations = set()
 
         for _ in range(max_iterations):
@@ -292,7 +269,7 @@ class FileAgent:
             )
             self.messages.extend(self.llm.build_tool_result_messages(executed))
 
-        # 达到最大迭代次数仍未结束,要求模型用普通对话给出总结
+        # 达到最大迭代次数仍未结束
         iter_start = time.time()
         stop_event = threading.Event()
         anim_thread = None
