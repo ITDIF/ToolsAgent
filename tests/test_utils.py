@@ -2,7 +2,7 @@ import json
 import os
 import pytest
 
-from src.infra.utils import log_action, get_recent_logs, get_log_path
+from src.infra.utils import log_action, get_recent_logs, get_log_path, flush_logs
 
 
 @pytest.fixture(autouse=True)
@@ -17,11 +17,13 @@ def clean_logs():
 class TestLogAction:
     def test_log_action_creates_file(self):
         log_action("test_action", {"key": "value"}, {"success": True})
+        flush_logs()
         assert os.path.exists(get_log_path())
 
     def test_log_action_appends(self):
         log_action("action1", {}, {"success": True})
         log_action("action2", {}, {"success": True})
+        flush_logs()
 
         logs = get_recent_logs(10)
         assert len(logs) >= 2
@@ -31,6 +33,7 @@ class TestLogAction:
 
     def test_log_entry_format(self):
         log_action("test_action", {"param": 123}, {"result": "ok"})
+        flush_logs()
         logs = get_recent_logs(1)
         assert len(logs) == 1
         log = logs[0]
@@ -48,6 +51,7 @@ class TestGetRecentLogs:
     def test_limit(self):
         for i in range(20):
             log_action(f"action_{i}", {}, {"success": True})
+        flush_logs()
         logs = get_recent_logs(5)
         assert len(logs) == 5
 

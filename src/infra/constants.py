@@ -10,6 +10,7 @@ class ConfigDefaults:
     MAX_TOOL_ITERATIONS = 8
     MAX_REQUEST_TIME = 300
     MAX_READ_BYTES = 1024 * 1024  # 1MB
+    SCAN_MAX_WORKERS = 4  # 磁盘扫描最大并发数
 
 
 class LLMConstants:

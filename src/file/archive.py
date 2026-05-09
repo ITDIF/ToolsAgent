@@ -1,10 +1,13 @@
 import os
 import shutil
 import subprocess
+import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 import zipfile
 import tarfile
+
+logger = logging.getLogger(__name__)
 
 # 可选的 rarfile 库支持
 try:
@@ -137,9 +140,17 @@ def extract_archive(archive_path: str, output_path: Optional[str] = None) -> Dic
     except PermissionError as e:
         _cleanup_snapshot(dst_snap)
         return {"success": False, "error": f"权限不足，无法解压: {e}"}
-    except Exception as e:
+    except (tarfile.TarError, zipfile.BadZipFile) as e:
+        _cleanup_snapshot(dst_snap)
+        return {"success": False, "error": f"压缩文件损坏或格式错误: {e}"}
+    except OSError as e:
         _restore_target(output_path, dst_snap)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": f"系统错误，无法解压: {e}"}
+    except Exception as e:
+        # 未预期的错误，记录堆栈信息
+        logger.exception("解压文件时发生未预期错误: archive_path=%s", archive_path)
+        _restore_target(output_path, dst_snap)
+        return {"success": False, "error": f"未知错误: {e}"}
 
 
 def create_archive(
@@ -264,6 +275,14 @@ def create_archive(
     except PermissionError as e:
         _cleanup_snapshot(dst_snap)
         return {"success": False, "error": f"权限不足，无法创建压缩文件: {e}"}
-    except Exception as e:
+    except (tarfile.TarError, zipfile.BadZipFile) as e:
+        _cleanup_snapshot(dst_snap)
+        return {"success": False, "error": f"压缩操作失败: {e}"}
+    except OSError as e:
         _restore_target(archive_path, dst_snap)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": f"系统错误，无法创建压缩文件: {e}"}
+    except Exception as e:
+        # 未预期的错误，记录堆栈信息
+        logger.exception("创建压缩文件时发生未预期错误: archive_path=%s", archive_path)
+        _restore_target(archive_path, dst_snap)
+        return {"success": False, "error": f"未知错误: {e}"}

@@ -2,9 +2,10 @@ import sys
 import threading
 import time
 import logging
+from typing import Any, Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
-from ..file.basic import TOOL_REGISTRY, TOOL_SCHEMAS
+from ..file.basic import TOOL_REGISTRY, TOOL_SCHEMAS, ToolNames
 from ..security.undo import set_active_session
 from ..infra.utils import log_action
 from ..infra.config import get_config
@@ -14,7 +15,7 @@ from ..ui.tui import select_option
 logger = logging.getLogger(__name__)
 
 
-def _thinking_animation(stop_event):
+def _thinking_animation(stop_event: threading.Event) -> None:
     """后台线程：在模型调用期间显示递增的 token 计数动画"""
     n = 0
     start = time.time()
@@ -77,8 +78,8 @@ class FileAgent:
         self.session_authorized_tools.clear()
         return n
 
-    def _is_session_authorized(self, tool_name: str, tool_args: dict) -> bool:
-        if tool_name == "batch_operations":
+    def _is_session_authorized(self, tool_name: str, tool_args: Dict[str, Any]) -> bool:
+        if tool_name == ToolNames.BATCH_OPERATIONS:
             for op in tool_args.get("operations", []) or []:
                 if not isinstance(op, dict):
                     continue
@@ -89,8 +90,8 @@ class FileAgent:
             return True
         return tool_name in self.session_authorized_tools
 
-    def _add_session_authorization(self, tool_name: str, tool_args: dict) -> None:
-        if tool_name == "batch_operations":
+    def _add_session_authorization(self, tool_name: str, tool_args: Dict[str, Any]) -> None:
+        if tool_name == ToolNames.BATCH_OPERATIONS:
             for op in tool_args.get("operations", []) or []:
                 if not isinstance(op, dict):
                     continue
@@ -114,14 +115,14 @@ class FileAgent:
         self.llm.reset_token_usage()
         return usage.copy()
 
-    def _need_confirm(self, tool_name, tool_args):
+    def _need_confirm(self, tool_name: str, tool_args: Dict[str, Any]) -> bool:
         """根据 config 判断该工具调用是否需要用户确认"""
         cfg = get_config()
         if tool_name == "delete_file":
             return cfg.get("confirm_delete", True)
         if tool_name == "write_file" and not tool_args.get("append", False):
             return cfg.get("confirm_overwrite", True)
-        if tool_name == "batch_operations":
+        if tool_name == ToolNames.BATCH_OPERATIONS:
             for op in tool_args.get("operations", []) or []:
                 if not isinstance(op, dict):
                     continue
@@ -129,7 +130,7 @@ class FileAgent:
                     return True
         return False
 
-    def _execute_tool(self, tool_name: str, tool_args: dict) -> dict:
+    def _execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Dict[str, Any]:
         """执行单个工具调用,返回结果 dict"""
         if tool_name not in TOOL_REGISTRY:
             error_msg = f"未知工具: {tool_name}"
@@ -160,8 +161,22 @@ class FileAgent:
             logger.exception(error_msg)
             return {"success": False, "error": error_msg}
 
-    def _handle_tool_calls(self, tool_calls, confirm_required, confirmed_operations=None):
-        """对一组 tool_calls 依次取得用户确认并执行,返回 [(tool_call, result)]"""
+    def _handle_tool_calls(
+        self,
+        tool_calls: List[Dict[str, Any]],
+        confirm_required: bool,
+        confirmed_operations: Optional[set] = None
+    ) -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
+        """对一组 tool_calls 依次取得用户确认并执行,返回 [(tool_call, result)]
+
+        Args:
+            tool_calls: 工具调用列表
+            confirm_required: 是否需要确认
+            confirmed_operations: 已确认的操作集合
+
+        Returns:
+            [(tool_call, result), ...] 执行结果列表
+        """
         if confirmed_operations is None:
             confirmed_operations = set()
         executed = []
@@ -216,7 +231,7 @@ class FileAgent:
             executed.append((tool_call, result))
         return executed
 
-    def process(self, user_input, confirm_required=True):
+    def process(self, user_input: str, confirm_required: bool = True) -> str:
         """处理用户输入,支持多轮工具调用直到模型给出最终回复"""
         set_active_session(self.session_id)
         self.messages.append({"role": "user", "content": user_input})
@@ -295,10 +310,10 @@ class FileAgent:
 
     def _format_tool_call(self, tool_name, args):
         """格式化工具调用描述"""
-        if tool_name == "undo_last":
+        if tool_name == ToolNames.UNDO_LAST:
             count = args.get("count", 1)
             return f"撤销最近 {count} 次操作" if count != 1 else "撤销最后一次操作"
-        elif tool_name == "undo_history":
+        elif tool_name == ToolNames.UNDO_HISTORY:
             return "查看撤销历史"
         elif tool_name == "batch_operations":
             ops = args.get("operations", []) or []

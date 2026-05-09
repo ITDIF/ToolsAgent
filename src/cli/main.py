@@ -19,7 +19,7 @@ from src.core.agent import FileAgent
 from src.infra.session import (
     generate_session_id, save_session, load_session, list_sessions
 )
-from src.infra.utils import get_recent_logs, cleanup_old_logs
+from src.infra.utils import get_recent_logs, cleanup_old_logs, shutdown_log_writer
 from src.infra.config import get_config
 from src.infra.logging_config import configure_logging
 from src.security.undo import cleanup_old_backups, undo_last, set_active_session, get_undo_history
@@ -242,6 +242,7 @@ def _save_and_exit(session_id, agent):
     print(f"\n{Color.GRAY}本次会话 Token 统计:{Color.RESET}")
     print(f"  输入: {usage['input']}  输出: {usage['output']}  总计: {usage['total']}")
     print(f"\n{Color.GRAY}会话已保存，再见!{Color.RESET}")
+    shutdown_log_writer()
 
 
 def _print_stats(elapsed, before_usage, after_usage):
@@ -401,6 +402,7 @@ def main():
             break
         except Exception as e:
             print(f"{Color.RED}错误: {e}{Color.RESET}")
+            shutdown_log_writer()
 
 
 if __name__ == "__main__":

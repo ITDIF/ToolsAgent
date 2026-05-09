@@ -3,8 +3,10 @@ import sys
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Union, Optional
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from typing import Any, Dict, List, Union, Optional, Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from threading import Event, local
 
 from ..security.sandbox import assert_safe_write_path, PathSafetyError
 from ..infra.config import get_config
@@ -19,19 +21,67 @@ from ..security.undo import (
     _get_batch_context,
     _set_batch_context,
     _clear_batch_context,
+    undo_last as _undo_last,
+    get_undo_history as _get_undo_history,
 )
-from ..infra.utils import log_action
+
+# 导入压缩工具函数，避免动态导入
+from ..file.archive import extract_archive as _extract_archive, create_archive as _create_archive
 
 logger = __import__("logging").getLogger(__name__)
 
 
+class ToolNames:
+    """工具名称常量"""
+    MOVE_FILE = "move_file"
+    COPY_FILE = "copy_file"
+    DELETE_FILE = "delete_file"
+    CREATE_FOLDER = "create_folder"
+    CREATE_FILE = "create_file"
+    READ_FILE = "read_file"
+    WRITE_FILE = "write_file"
+    RENAME_FILE = "rename_file"
+    SEARCH_FILES = "search_files"
+    LIST_FILES = "list_files"
+    SCAN_DISK = "scan_disk"
+    EXTRACT_ARCHIVE = "extract_archive"
+    CREATE_ARCHIVE = "create_archive"
+    UNDO_LAST = "undo_last"
+    UNDO_HISTORY = "undo_history"
+    BATCH_OPERATIONS = "batch_operations"
+
+
+@dataclass
+class ScanProgress:
+    """扫描进度信息"""
+    current_path: str
+    scanned_files: int
+    scanned_dirs: int
+    total_bytes: int
+    elapsed_time: float
+
+
+# 批量操作上下文：记录路径是否已预先校验
+_batch_validation_context = local()
+
+
+def _set_paths_validated(validated: bool) -> None:
+    """设置当前批量操作的路径校验状态"""
+    _batch_validation_context.paths_validated = validated
+
+
+def _is_paths_validated() -> bool:
+    """检查当前批量操作的路径是否已校验"""
+    return getattr(_batch_validation_context, 'paths_validated', False)
+
+
 # 允许在 batch_operations 内部调用的工具(写操作 + 只读读取)
 _BATCH_ALLOWED_TOOLS = {
-    "move_file", "copy_file", "delete_file",
-    "create_folder", "create_file",
-    "write_file", "rename_file",
-    "read_file", "list_files", "search_files",
-    "extract_archive", "create_archive",
+    ToolNames.MOVE_FILE, ToolNames.COPY_FILE, ToolNames.DELETE_FILE,
+    ToolNames.CREATE_FOLDER, ToolNames.CREATE_FILE,
+    ToolNames.WRITE_FILE, ToolNames.RENAME_FILE,
+    ToolNames.READ_FILE, ToolNames.LIST_FILES, ToolNames.SEARCH_FILES,
+    ToolNames.EXTRACT_ARCHIVE, ToolNames.CREATE_ARCHIVE,
 }
 
 
@@ -43,12 +93,14 @@ def move_file(src: str, dst: str) -> Dict[str, Any]:
     if not src_path.exists():
         return {"success": False, "error": f"源路径不存在: {src}"}
 
-    cfg = get_config()
-    try:
-        assert_safe_write_path(src, cfg)
-        assert_safe_write_path(dst, cfg)
-    except PathSafetyError as e:
-        return {"success": False, "error": str(e)}
+    # 如果在批量上下文中且路径已预先校验，则跳过校验
+    if not (_get_batch_context() is not None and _is_paths_validated()):
+        cfg = get_config()
+        try:
+            assert_safe_write_path(src, cfg)
+            assert_safe_write_path(dst, cfg)
+        except PathSafetyError as e:
+            return {"success": False, "error": str(e)}
 
     dst_snap = capture_target_state(dst)
     try:
@@ -61,10 +113,17 @@ def move_file(src: str, dst: str) -> Dict[str, Any]:
         })
         return {"success": True, "message": f"已移动: {src} -> {dst}"}
     except PermissionError as e:
-        return {"success": False, "error": f"权限不足，无法移动: {e}"}
-    except Exception as e:
         _cleanup_snapshot(dst_snap)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": f"权限不足，无法移动: {e}"}
+    except OSError as e:
+        # 处理各种操作系统错误（文件不存在、磁盘满等）
+        _cleanup_snapshot(dst_snap)
+        return {"success": False, "error": f"系统错误，无法移动: {e}"}
+    except Exception as e:
+        # 未预期的错误，记录堆栈信息
+        logger.exception("移动文件时发生未预期错误: src=%s, dst=%s", src, dst)
+        _cleanup_snapshot(dst_snap)
+        return {"success": False, "error": f"未知错误: {e}"}
 
 
 def copy_file(src: str, dst: str) -> Dict[str, Any]:
@@ -75,11 +134,13 @@ def copy_file(src: str, dst: str) -> Dict[str, Any]:
     if not src_path.exists():
         return {"success": False, "error": f"源路径不存在: {src}"}
 
-    cfg = get_config()
-    try:
-        assert_safe_write_path(dst, cfg)
-    except PathSafetyError as e:
-        return {"success": False, "error": str(e)}
+    # 如果在批量上下文中且路径已预先校验，则跳过校验
+    if not (_get_batch_context() is not None and _is_paths_validated()):
+        cfg = get_config()
+        try:
+            assert_safe_write_path(dst, cfg)
+        except PathSafetyError as e:
+            return {"success": False, "error": str(e)}
 
     dst_snap = capture_target_state(dst)
     try:
@@ -100,10 +161,15 @@ def copy_file(src: str, dst: str) -> Dict[str, Any]:
     except PermissionError as e:
         _restore_target(dst, dst_snap)
         return {"success": False, "error": f"权限不足，无法复制: {e}"}
-    except Exception as e:
-        # 失败时尽力还原
+    except OSError as e:
+        # 处理各种操作系统错误
         _restore_target(dst, dst_snap)
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": f"系统错误，无法复制: {e}"}
+    except Exception as e:
+        # 未预期的错误，记录堆栈信息
+        logger.exception("复制文件时发生未预期错误: src=%s, dst=%s", src, dst)
+        _restore_target(dst, dst_snap)
+        return {"success": False, "error": f"未知错误: {e}"}
 
 
 def delete_file(path: str) -> Dict[str, Any]:
@@ -113,11 +179,13 @@ def delete_file(path: str) -> Dict[str, Any]:
     if not file_path.exists():
         return {"success": False, "error": f"路径不存在: {path}"}
 
-    cfg = get_config()
-    try:
-        assert_safe_write_path(path, cfg)
-    except PathSafetyError as e:
-        return {"success": False, "error": str(e)}
+    # 如果在批量上下文中且路径已预先校验，则跳过校验
+    if not (_get_batch_context() is not None and _is_paths_validated()):
+        cfg = get_config()
+        try:
+            assert_safe_write_path(path, cfg)
+        except PathSafetyError as e:
+            return {"success": False, "error": str(e)}
 
     try:
         # 备份被删除的文件/文件夹
@@ -135,19 +203,26 @@ def delete_file(path: str) -> Dict[str, Any]:
         return {"success": True, "message": f"已删除: {path}"}
     except PermissionError as e:
         return {"success": False, "error": f"权限不足，无法删除: {e}"}
+    except OSError as e:
+        # 处理各种操作系统错误
+        return {"success": False, "error": f"系统错误，无法删除: {e}"}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        # 未预期的错误，记录堆栈信息
+        logger.exception("删除文件时发生未预期错误: path=%s", path)
+        return {"success": False, "error": f"未知错误: {e}"}
 
 
 def create_folder(path: str) -> Dict[str, Any]:
     """创建文件夹"""
     folder_path = Path(path)
 
-    cfg = get_config()
-    try:
-        assert_safe_write_path(path, cfg)
-    except PathSafetyError as e:
-        return {"success": False, "error": str(e)}
+    # 如果在批量上下文中且路径已预先校验，则跳过校验
+    if not (_get_batch_context() is not None and _is_paths_validated()):
+        cfg = get_config()
+        try:
+            assert_safe_write_path(path, cfg)
+        except PathSafetyError as e:
+            return {"success": False, "error": str(e)}
 
     try:
         existed = folder_path.exists()
@@ -170,11 +245,13 @@ def create_file(path: str, content: str = "") -> Dict[str, Any]:
     """创建文件,可指定内容。若目标已存在则备份原内容,撤销时可还原"""
     file_path = Path(path)
 
-    cfg = get_config()
-    try:
-        assert_safe_write_path(path, cfg)
-    except PathSafetyError as e:
-        return {"success": False, "error": str(e)}
+    # 如果在批量上下文中且路径已预先校验，则跳过校验
+    if not (_get_batch_context() is not None and _is_paths_validated()):
+        cfg = get_config()
+        try:
+            assert_safe_write_path(path, cfg)
+        except PathSafetyError as e:
+            return {"success": False, "error": str(e)}
 
     snap = capture_target_state(path)
     try:
@@ -231,11 +308,13 @@ def write_file(path: str, content: str, append: bool = False) -> Dict[str, Any]:
     """写入文件内容,支持覆盖或追加。两种模式都支持撤销"""
     file_path = Path(path)
 
-    cfg = get_config()
-    try:
-        assert_safe_write_path(path, cfg)
-    except PathSafetyError as e:
-        return {"success": False, "error": str(e)}
+    # 如果在批量上下文中且路径已预先校验，则跳过校验
+    if not (_get_batch_context() is not None and _is_paths_validated()):
+        cfg = get_config()
+        try:
+            assert_safe_write_path(path, cfg)
+        except PathSafetyError as e:
+            return {"success": False, "error": str(e)}
 
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -279,12 +358,14 @@ def rename_file(src: str, dst: str) -> Dict[str, Any]:
     if not src_path.exists():
         return {"success": False, "error": f"源路径不存在: {src}"}
 
-    cfg = get_config()
-    try:
-        assert_safe_write_path(src, cfg)
-        assert_safe_write_path(dst, cfg)
-    except PathSafetyError as e:
-        return {"success": False, "error": str(e)}
+    # 如果在批量上下文中且路径已预先校验，则跳过校验
+    if not (_get_batch_context() is not None and _is_paths_validated()):
+        cfg = get_config()
+        try:
+            assert_safe_write_path(src, cfg)
+            assert_safe_write_path(dst, cfg)
+        except PathSafetyError as e:
+            return {"success": False, "error": str(e)}
 
     dst_snap = capture_target_state(dst)
     try:
@@ -312,9 +393,20 @@ def rename_file(src: str, dst: str) -> Dict[str, Any]:
 def search_files(
     pattern: str,
     path: str = ".",
-    search_type: str = "all"
+    search_type: str = "all",
+    progress_callback: Optional[Callable[[ScanProgress], None]] = None
 ) -> Dict[str, Any]:
-    """搜索文件/文件夹，支持按名称匹配"""
+    """搜索文件/文件夹，支持按名称匹配
+
+    Args:
+        pattern: 搜索关键词
+        path: 搜索起始目录
+        search_type: 搜索类型 (all/file/folder)
+        progress_callback: 进度回调函数
+
+    Returns:
+        搜索结果字典
+    """
     dir_path = Path(path)
 
     if not dir_path.exists():
@@ -331,16 +423,22 @@ def search_files(
         truncated = False
         pattern_lower = pattern.lower()
         start_time = time.time()
+        stop_event = Event()
+        scanned_files = 0
+        scanned_dirs = 0
+        total_bytes = 0
 
-        for root, dirs, files in os.walk(dir_path):
-            if time.time() - start_time > tool_timeout:
-                truncated = True
-                break
+        def _scan_directory(root: str, dirs: List[str], files: List[str]) -> None:
+            """扫描单个目录（用于并发处理）"""
+            nonlocal results, truncated, scanned_files, scanned_dirs, total_bytes
+
+            if stop_event.is_set():
+                return
 
             cur_depth = len(Path(root).resolve().parts) - base_depth
             if cur_depth >= max_depth:
-                # 达到深度上限,不再继续向下
-                dirs[:] = []
+                dirs.clear()  # 达到深度上限,不再继续向下
+                return
 
             candidates = []
             if search_type in ("all", "folder"):
@@ -349,6 +447,9 @@ def search_files(
                 candidates.extend((f, False) for f in files)
 
             for name, is_dir in candidates:
+                if stop_event.is_set() or truncated:
+                    return
+
                 if pattern_lower in name.lower():
                     results.append({
                         "name": name,
@@ -357,8 +458,44 @@ def search_files(
                     })
                     if len(results) >= max_results:
                         truncated = True
-                        break
-            if truncated:
+                        stop_event.set()
+                        return
+
+            # 更新统计
+            scanned_files += len(files)
+            scanned_dirs += len(dirs)
+
+            # 尝试计算当前目录大小（异步避免阻塞）
+            if not stop_event.is_set():
+                for f in files:
+                    try:
+                        file_path = Path(root) / f
+                        if file_path.is_file():
+                            total_bytes += file_path.stat().st_size
+                    except (OSError, PermissionError):
+                        pass
+
+            # 调用进度回调
+            if progress_callback and not stop_event.is_set():
+                elapsed = time.time() - start_time
+                progress_callback(ScanProgress(
+                    current_path=root,
+                    scanned_files=scanned_files,
+                    scanned_dirs=scanned_dirs,
+                    total_bytes=total_bytes,
+                    elapsed_time=elapsed
+                ))
+
+        # 使用 os.walk 扫描，但分块处理以提高响应性
+        for root, dirs, files in os.walk(dir_path):
+            if time.time() - start_time > tool_timeout:
+                truncated = True
+                stop_event.set()
+                break
+
+            _scan_directory(root, dirs, files)
+
+            if truncated or stop_event.is_set():
                 break
 
         return {
@@ -368,6 +505,9 @@ def search_files(
             "pattern": pattern,
             "truncated": truncated,
             "max_results": max_results,
+            "scanned_files": scanned_files,
+            "scanned_dirs": scanned_dirs,
+            "elapsed_time": time.time() - start_time,
         }
     except PermissionError as e:
         logger.warning("搜索文件权限不足: %s", path)
@@ -413,9 +553,21 @@ def scan_disk(
     path: str = ".",
     max_depth: Optional[int] = None,
     max_results: Optional[int] = None,
-    min_size: int = 0
+    min_size: int = 0,
+    progress_callback: Optional[Callable[[ScanProgress], None]] = None
 ) -> Dict[str, Any]:
-    """扫描目录并统计各子文件夹大小,返回按大小降序排列的结果"""
+    """扫描目录并统计各子文件夹大小,返回按大小降序排列的结果
+
+    Args:
+        path: 扫描起始目录
+        max_depth: 最大递归深度
+        max_results: 返回结果最大数量
+        min_size: 最小字节数过滤
+        progress_callback: 进度回调函数
+
+    Returns:
+        扫描结果字典
+    """
     dir_path = Path(path)
 
     if not dir_path.exists():
@@ -425,43 +577,86 @@ def scan_disk(
     max_depth = int(max_depth if max_depth is not None else cfg.get("max_search_depth", 10))
     max_results = int(max_results if max_results is not None else cfg.get("max_search_results", 100))
     tool_timeout = float(cfg.get("tool_timeout", ConfigDefaults.TOOL_TIMEOUT))
+    max_workers = int(cfg.get("scan_max_workers", 4))  # 并发工作线程数
 
     base = str(dir_path.resolve())
     base_depth = len(dir_path.resolve().parts)
     sizes = {}
     truncated = False
     start_time = time.time()
+    stop_event = Event()
+    scanned_dirs = 0
+
+    def _get_file_size(fp: str) -> int:
+        """获取单个文件大小，忽略错误"""
+        try:
+            return os.path.getsize(fp)
+        except (OSError, PermissionError):
+            return 0
+
+    def _process_dir(root: str, dirs: List[str], files: List[str]) -> int:
+        """处理单个目录，返回该目录及其子目录的总大小"""
+        nonlocal sizes, scanned_dirs
+
+        cur_depth = len(Path(root).resolve().parts) - base_depth
+        if cur_depth >= max_depth:
+            dirs.clear()  # 达到深度上限,不再继续向下
+            return 0
+
+        # 并行计算文件大小
+        root_size = 0
+        file_paths = [os.path.join(root, f) for f in files]
+
+        if len(file_paths) > 100:  # 文件多时使用并发
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_get_file_size, fp) for fp in file_paths]
+                for future in as_completed(futures):
+                    if stop_event.is_set():
+                        break
+                    root_size += future.result()
+        else:
+            for fp in file_paths:
+                if stop_event.is_set():
+                    break
+                root_size += _get_file_size(fp)
+
+        sizes[root] = sizes.get(root, 0) + root_size
+
+        # 将当前目录大小累加到所有祖先目录
+        parent = root
+        while True:
+            parent = os.path.dirname(parent)
+            if not parent or len(parent) < len(base):
+                break
+            sizes[parent] = sizes.get(parent, 0) + root_size
+
+        scanned_dirs += 1
+
+        # 调用进度回调
+        if progress_callback and not stop_event.is_set():
+            elapsed = time.time() - start_time
+            total_bytes = sum(sizes.values())
+            progress_callback(ScanProgress(
+                current_path=root,
+                scanned_files=len(files),
+                scanned_dirs=scanned_dirs,
+                total_bytes=total_bytes,
+                elapsed_time=elapsed
+            ))
+
+        return root_size
 
     try:
         for root, dirs, files in os.walk(base):
             if time.time() - start_time > tool_timeout:
                 truncated = True
+                stop_event.set()
                 break
 
-            cur_depth = len(Path(root).resolve().parts) - base_depth
-            if cur_depth >= max_depth:
-                dirs[:] = []
-                continue
+            _process_dir(root, dirs, files)
 
-            root_size = 0
-            for f in files:
-                fp = os.path.join(root, f)
-                try:
-                    root_size += os.path.getsize(fp)
-                except PermissionError:
-                    pass
-                except Exception:
-                    pass
-
-            sizes[root] = sizes.get(root, 0) + root_size
-
-            # 将当前目录大小累加到所有祖先目录
-            parent = root
-            while True:
-                parent = os.path.dirname(parent)
-                if not parent or len(parent) < len(base):
-                    break
-                sizes[parent] = sizes.get(parent, 0) + root_size
+            if stop_event.is_set():
+                break
 
         items = [
             {
@@ -484,16 +679,85 @@ def scan_disk(
             "items": items,
             "truncated": truncated or truncated_by_results,
             "count": len(items),
+            "scanned_dirs": scanned_dirs,
+            "elapsed_time": time.time() - start_time,
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def _extract_paths_from_operation(tool_name: str, tool_args: Dict[str, Any]) -> List[str]:
+    """从工具参数中提取需要安全校验的路径列表
+
+    Args:
+        tool_name: 工具名称
+        tool_args: 工具参数
+
+    Returns:
+        需要校验的路径列表
+    """
+    """从工具参数中提取需要安全校验的路径列表"""
+    paths = []
+
+    if tool_name == ToolNames.MOVE_FILE:
+        paths.extend([tool_args.get("src", ""), tool_args.get("dst", "")])
+    elif tool_name == ToolNames.COPY_FILE:
+        paths.append(tool_args.get("dst", ""))
+    elif tool_name == ToolNames.DELETE_FILE:
+        paths.append(tool_args.get("path", ""))
+    elif tool_name == ToolNames.CREATE_FOLDER:
+        paths.append(tool_args.get("path", ""))
+    elif tool_name == ToolNames.CREATE_FILE:
+        paths.append(tool_args.get("path", ""))
+    elif tool_name == ToolNames.WRITE_FILE:
+        paths.append(tool_args.get("path", ""))
+    elif tool_name == ToolNames.RENAME_FILE:
+        paths.extend([tool_args.get("src", ""), tool_args.get("dst", "")])
+    elif tool_name == ToolNames.EXTRACT_ARCHIVE:
+        if tool_args.get("output_path"):
+            paths.append(tool_args["output_path"])
+        else:
+            archive_path = tool_args.get("archive_path", "")
+            if archive_path:
+                paths.append(str(Path(archive_path).parent / Path(archive_path).stem))
+    elif tool_name == ToolNames.CREATE_ARCHIVE:
+        paths.append(tool_args.get("archive_path", ""))
+
+    return [p for p in paths if p]  # 过滤空路径
+
+
+def _validate_paths_batch(paths: List[str]) -> Dict[str, Any]:
+    """批量校验路径安全性
+
+    Returns:
+        {"success": bool, "errors": {path: error_msg}}
+    """
+    if not paths:
+        return {"success": True, "errors": {}}
+
+    cfg = get_config()
+    errors = {}
+    seen = set()  # 去重，避免重复校验
+
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+
+        try:
+            assert_safe_write_path(path, cfg)
+        except PathSafetyError as e:
+            errors[path] = str(e)
+
+    return {"success": len(errors) == 0, "errors": errors}
 
 
 def batch_operations(
     operations: List[Dict[str, Any]],
     stop_on_error: bool = True,
     label: Optional[str] = None,
-    interactive: bool = False
+    interactive: bool = False,
+    dry_run: bool = False
 ) -> Dict[str, Any]:
     """批量执行多个文件操作,作为一个整体进入撤销栈。
 
@@ -502,9 +766,11 @@ def batch_operations(
         stop_on_error: True 则首个失败就中断后续步骤;False 则尽力执行所有步骤
         label: 撤销历史中显示的标签
         interactive: 是否显示进度信息（用于交互式模式）
+        dry_run: 是否为预览模式，只验证不执行实际操作
 
     Returns:
-        每一步的结果,以及整体成功/失败标志
+        每一步的结果,以及整体成功/失败标志。
+        dry_run=True 时，返回 {"success": bool, "preview": [...], "dry_run": True}
     """
     if not isinstance(operations, list) or not operations:
         return {"success": False, "error": "operations 必须是非空数组"}
@@ -512,6 +778,28 @@ def batch_operations(
     # 嵌套调用直接拒绝,避免歧义
     if _get_batch_context() is not None:
         return {"success": False, "error": "不允许嵌套 batch_operations"}
+
+    # 预先提取并批量校验所有路径
+    all_paths = []
+    for op in operations:
+        if isinstance(op, dict):
+            tool_name = op.get("tool")
+            tool_args = op.get("arguments") or {}
+            paths = _extract_paths_from_operation(tool_name, tool_args)
+            all_paths.extend(paths)
+
+    # 批量校验路径安全性
+    if all_paths:
+        validation = _validate_paths_batch(all_paths)
+        if not validation["success"]:
+            error_msg = f"路径安全校验失败: {len(validation['errors'])} 个路径不安全"
+            return {
+                "success": False,
+                "error": error_msg,
+                "invalid_paths": validation["errors"]
+            }
+        # 标记路径已校验，子操作可跳过重复校验
+        _set_paths_validated(True)
 
     sub_actions: List[Dict[str, Any]] = []
     _set_batch_context(sub_actions)
@@ -524,7 +812,8 @@ def batch_operations(
 
         # 如果是交互式模式且操作数量较多，显示进度
         if interactive and total_ops > 1:
-            print(f"\033[90m  批量执行 {total_ops} 个操作...\033[0m", flush=True)
+            mode_msg = "预览" if dry_run else "执行"
+            print(f"\033[90m  批量{mode_msg} {total_ops} 个操作...\033[0m", flush=True)
 
         for i, op in enumerate(operations):
             # 显示进度
@@ -532,10 +821,11 @@ def batch_operations(
                 progress = f"[{i+1}/{total_ops}]"
 
             if not isinstance(op, dict):
-                results.append({"index": i, "success": False, "error": "operation 必须是对象"})
+                error_msg = "operation 必须是对象"
+                results.append({"index": i, "success": False, "error": error_msg, "tool": None, "dry_run": dry_run})
                 failures += 1
                 if interactive:
-                    print(f"  {progress} ❌ 错误: 操作格式不正确")
+                    print(f"  {progress} ❌ {error_msg}")
                 if stop_on_error:
                     halted_index = i
                     break
@@ -544,30 +834,60 @@ def batch_operations(
             tool_name = op.get("tool")
             tool_args = op.get("arguments") or {}
             if tool_name not in _BATCH_ALLOWED_TOOLS:
+                error_msg = f"工具 {tool_name} 不允许在批量中调用"
                 results.append({
                     "index": i, "tool": tool_name,
-                    "success": False, "error": f"工具 {tool_name} 不允许在批量中调用"
+                    "success": False, "error": error_msg, "dry_run": dry_run
                 })
                 failures += 1
                 if interactive:
-                    print(f"  {progress} ❌ {tool_name}: 不允许在批量中调用")
+                    print(f"  {progress} ❌ {error_msg}")
                 if stop_on_error:
                     halted_index = i
                     break
                 continue
             if not isinstance(tool_args, dict):
+                error_msg = "arguments 必须是对象"
                 results.append({
                     "index": i, "tool": tool_name,
-                    "success": False, "error": "arguments 必须是对象"
+                    "success": False, "error": error_msg, "dry_run": dry_run
                 })
                 failures += 1
                 if interactive:
-                    print(f"  {progress} ❌ {tool_name}: 参数格式错误")
+                    print(f"  {progress} ❌ {tool_name}: {error_msg}")
                 if stop_on_error:
                     halted_index = i
                     break
                 continue
 
+            # 预览模式：只描述操作不执行
+            if dry_run:
+                preview_desc = f"将要执行: {tool_name}"
+                if tool_args:
+                    args_preview = {k: v for k, v in tool_args.items()
+                                   if k not in ['content']}  # 排除长内容
+                    if args_preview:
+                        preview_desc += f" {args_preview}"
+
+                step_result = {
+                    "success": True,
+                    "message": preview_desc,
+                    "dry_run": True,
+                    "preview": True
+                }
+                results.append({
+                    "index": i,
+                    "tool": tool_name,
+                    "result": step_result,
+                    "success": True,
+                    "dry_run": True
+                })
+
+                if interactive:
+                    print(f"  {progress} 🔍 {preview_desc}")
+                continue
+
+            # 正常执行模式
             try:
                 step_result = TOOL_REGISTRY[tool_name](**tool_args)
             except TypeError as e:
@@ -576,7 +896,7 @@ def batch_operations(
                 step_result = {"success": False, "error": str(e)}
 
             entry = {"index": i, "tool": tool_name, "result": step_result,
-                     "success": bool(step_result.get("success"))}
+                     "success": bool(step_result.get("success")), "dry_run": False}
             results.append(entry)
 
             # 更新进度显示
@@ -599,13 +919,27 @@ def batch_operations(
                     break
     finally:
         _clear_batch_context()
+        _set_paths_validated(False)  # 重置校验状态
 
     # 显示最终结果
     if interactive and total_ops > 1:
-        if failures == 0:
+        if dry_run:
+            print(f"\033[90m  预览完成 ({len(results)} 个操作) - 使用 dry_run=False 实际执行\033[0m")
+        elif failures == 0:
             print(f"\033[90m  全部完成 ({total_ops} 个操作) ✓\033[0m")
         else:
             print(f"\033[90m  完成 {total_ops - failures}/{total_ops} 个操作, {failures} 个失败\033[0m")
+
+    # 预览模式直接返回，不入撤销栈
+    if dry_run:
+        return {
+            "success": failures == 0,
+            "dry_run": True,
+            "preview": results,
+            "total": len(operations),
+            "failures": failures,
+            "message": f"预览模式：共 {len(results)} 个操作，{failures} 个可能失败"
+        }
 
     # 仅当至少有一步成功且产生了 sub_action 时才入栈
     if sub_actions:
@@ -617,6 +951,7 @@ def batch_operations(
 
     return {
         "success": failures == 0,
+        "dry_run": False,
         "total": len(operations),
         "executed": len(results),
         "failures": failures,
@@ -626,34 +961,39 @@ def batch_operations(
 
 
 # 导出旧的函数签名以保持兼容
-undo_last = lambda count=1: __import__("src.security.undo", fromlist=["undo_last"]).undo_last(count)
-get_undo_history = lambda limit=20: __import__("src.security.undo", fromlist=["get_undo_history"]).get_undo_history(limit)
+def undo_last(count: int = 1) -> Dict[str, Any]:
+    """撤销最近 count 次操作"""
+    return _undo_last(count)
+
+def get_undo_history(limit: int = 20) -> Dict[str, Any]:
+    """获取撤销历史"""
+    return _get_undo_history(limit)
 
 
 # 工具注册表
 TOOL_REGISTRY = {
-    "move_file": move_file,
-    "copy_file": copy_file,
-    "delete_file": delete_file,
-    "create_folder": create_folder,
-    "create_file": create_file,
-    "read_file": read_file,
-    "write_file": write_file,
-    "rename_file": rename_file,
-    "search_files": search_files,
-    "list_files": list_files,
-    "scan_disk": scan_disk,
-    "extract_archive": lambda **kw: __import__("src.file.archive", fromlist=["extract_archive"]).extract_archive(**kw),
-    "create_archive": lambda **kw: __import__("src.file.archive", fromlist=["create_archive"]).create_archive(**kw),
-    "undo_last": undo_last,
-    "undo_history": get_undo_history,
-    "batch_operations": batch_operations,
+    ToolNames.MOVE_FILE: move_file,
+    ToolNames.COPY_FILE: copy_file,
+    ToolNames.DELETE_FILE: delete_file,
+    ToolNames.CREATE_FOLDER: create_folder,
+    ToolNames.CREATE_FILE: create_file,
+    ToolNames.READ_FILE: read_file,
+    ToolNames.WRITE_FILE: write_file,
+    ToolNames.RENAME_FILE: rename_file,
+    ToolNames.SEARCH_FILES: search_files,
+    ToolNames.LIST_FILES: list_files,
+    ToolNames.SCAN_DISK: scan_disk,
+    ToolNames.EXTRACT_ARCHIVE: _extract_archive,
+    ToolNames.CREATE_ARCHIVE: _create_archive,
+    ToolNames.UNDO_LAST: undo_last,
+    ToolNames.UNDO_HISTORY: get_undo_history,
+    ToolNames.BATCH_OPERATIONS: batch_operations,
 }
 
 
 TOOL_SCHEMAS = [
     {
-        "name": "undo_last",
+        "name": ToolNames.UNDO_LAST,
         "description": "撤销最近的文件操作。可通过 count 一次撤销多步;批量操作算一步整体撤销",
         "input_schema": {
             "type": "object",
@@ -664,7 +1004,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "undo_history",
+        "name": ToolNames.UNDO_HISTORY,
         "description": "查看撤销栈,列出可撤销的最近操作(最近的排在第一位)",
         "input_schema": {
             "type": "object",
@@ -675,7 +1015,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "batch_operations",
+        "name": ToolNames.BATCH_OPERATIONS,
         "description": "批量执行多个文件操作,作为一个整体可一次撤销。适合需要一次完成多个相关写操作的场景(如整理目录、批量改名)。允许的子工具: move_file/copy_file/delete_file/create_folder/create_file/write_file/rename_file/read_file/list_files/search_files。",
         "input_schema": {
             "type": "object",
@@ -696,13 +1036,17 @@ TOOL_SCHEMAS = [
                     "type": "boolean",
                     "description": "首个失败步骤是否中断后续步骤,默认 true"
                 },
-                "label": {"type": "string", "description": "撤销历史显示的标签(可选)"}
+                "label": {"type": "string", "description": "撤销历史显示的标签(可选)"},
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "是否为预览模式，只验证不执行实际操作(默认 false)"
+                }
             },
             "required": ["operations"]
         }
     },
     {
-        "name": "move_file",
+        "name": ToolNames.MOVE_FILE,
         "description": "移动文件或文件夹从源路径到目标路径",
         "input_schema": {
             "type": "object",
@@ -714,7 +1058,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "copy_file",
+        "name": ToolNames.COPY_FILE,
         "description": "复制文件或文件夹",
         "input_schema": {
             "type": "object",
@@ -726,7 +1070,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "delete_file",
+        "name": ToolNames.DELETE_FILE,
         "description": "删除文件或文件夹（危险操作，需谨慎）",
         "input_schema": {
             "type": "object",
@@ -737,7 +1081,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "create_folder",
+        "name": ToolNames.CREATE_FOLDER,
         "description": "创建文件夹，会自动创建不存在的父目录",
         "input_schema": {
             "type": "object",
@@ -748,7 +1092,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "create_file",
+        "name": ToolNames.CREATE_FILE,
         "description": "创建文件，可指定文件内容，会自动创建不存在的父目录",
         "input_schema": {
             "type": "object",
@@ -760,7 +1104,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "read_file",
+        "name": ToolNames.READ_FILE,
         "description": "读取文件内容",
         "input_schema": {
             "type": "object",
@@ -771,7 +1115,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "write_file",
+        "name": ToolNames.WRITE_FILE,
         "description": "写入文件内容，支持覆盖或追加模式",
         "input_schema": {
             "type": "object",
@@ -784,7 +1128,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "rename_file",
+        "name": ToolNames.RENAME_FILE,
         "description": "重命名文件或文件夹",
         "input_schema": {
             "type": "object",
@@ -796,7 +1140,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "search_files",
+        "name": ToolNames.SEARCH_FILES,
         "description": "搜索文件或文件夹，支持按名称匹配模式",
         "input_schema": {
             "type": "object",
@@ -809,7 +1153,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "list_files",
+        "name": ToolNames.LIST_FILES,
         "description": "列出指定目录下的文件和文件夹",
         "input_schema": {
             "type": "object",
@@ -819,7 +1163,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "scan_disk",
+        "name": ToolNames.SCAN_DISK,
         "description": "扫描目录并统计各子文件夹大小，返回按大小降序排列的结果",
         "input_schema": {
             "type": "object",
@@ -832,7 +1176,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "extract_archive",
+        "name": ToolNames.EXTRACT_ARCHIVE,
         "description": "解压压缩文件，支持 zip、tar、tar.gz、tgz、tar.bz2、rar 格式。默认解压到同名文件夹",
         "input_schema": {
             "type": "object",
@@ -844,7 +1188,7 @@ TOOL_SCHEMAS = [
         }
     },
     {
-        "name": "create_archive",
+        "name": ToolNames.CREATE_ARCHIVE,
         "description": "创建压缩文件，支持 zip、tar、tar.gz、tgz、tar.bz2、rar 格式。可以压缩单个文件或多个文件/文件夹",
         "input_schema": {
             "type": "object",
