@@ -8,6 +8,7 @@ from file_ops import TOOL_REGISTRY, TOOL_SCHEMAS
 from undo_manager import set_active_session
 from utils import log_action
 from config import get_config
+from tui import select_option
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +62,50 @@ class FileAgent:
         self.total_tokens = {"input": 0, "output": 0, "total": 0}
         self.session_id = session_id or "default"
         self.interactive = interactive
+        # 本次进程生命周期内已被"会话级"授权的工具类型集合
+        # 切换 session_id / 模型时不清空,仅在进程退出时丢失
+        self.session_authorized_tools: set[str] = set()
 
     def set_session(self, session_id):
         """切换当前会话 ID,后续工具调用会使用对应的撤销栈"""
         self.session_id = session_id or "default"
+
+    def revoke_session_authorizations(self) -> int:
+        """清空所有会话级授权,返回清空前的条数"""
+        n = len(self.session_authorized_tools)
+        self.session_authorized_tools.clear()
+        return n
+
+    def _is_session_authorized(self, tool_name: str, tool_args: dict) -> bool:
+        """判断该工具调用是否已在本次会话中被整体授权
+        - 普通工具: 工具类型在授权集中即视为已授权
+        - batch_operations: 内部所有需要确认的子工具类型必须都在授权集中
+        """
+        if tool_name == "batch_operations":
+            for op in tool_args.get("operations", []) or []:
+                if not isinstance(op, dict):
+                    continue
+                sub_tool = op.get("tool")
+                sub_args = op.get("arguments") or {}
+                if self._need_confirm(sub_tool, sub_args) and sub_tool not in self.session_authorized_tools:
+                    return False
+            return True
+        return tool_name in self.session_authorized_tools
+
+    def _add_session_authorization(self, tool_name: str, tool_args: dict) -> None:
+        """将工具类型加入会话级授权集
+        - batch_operations: 把内部所有需要确认的子工具类型一并加入
+        """
+        if tool_name == "batch_operations":
+            for op in tool_args.get("operations", []) or []:
+                if not isinstance(op, dict):
+                    continue
+                sub_tool = op.get("tool")
+                sub_args = op.get("arguments") or {}
+                if sub_tool and self._need_confirm(sub_tool, sub_args):
+                    self.session_authorized_tools.add(sub_tool)
+        else:
+            self.session_authorized_tools.add(tool_name)
 
     def get_token_usage(self):
         """获取 token 使用统计"""
@@ -150,22 +191,36 @@ class FileAgent:
 
             # 如果是需要确认的操作，检查是否已经确认过了
             if need_confirm:
-                if operation_key in confirmed_operations:
-                    # 已经确认过了，跳过再次询问
+                if self._is_session_authorized(tool_name, tool_args):
+                    # 本次会话已授权,跳过询问
+                    if self.interactive:
+                        print(f"  ⎿  {desc} … (会话已授权)")
+                elif operation_key in confirmed_operations:
+                    # 本次请求已确认过,跳过再次询问
                     if self.interactive:
                         print(f"  ⎿  {desc} … (已确认)")
                 else:
-                    # 还没确认过，询问用户
+                    # 还没确认过,弹出方向键选择菜单
                     if self.interactive:
                         print(f"  ⎿  {desc}")
-                    confirm = input("  Allow? (y/n): ")
-                    if confirm.lower() != "y":
+                    choice = select_option(
+                        "  请选择操作:",
+                        ["本次允许", "本次会话允许", "取消"],
+                        default=0,
+                    )
+                    if choice == 1:
+                        self._add_session_authorization(tool_name, tool_args)
+                        confirmed_operations.add(operation_key)
+                        if self.interactive:
+                            print(f"  ⎿  本次会话内已授权同类操作")
+                    elif choice == 0:
+                        confirmed_operations.add(operation_key)
+                    else:
+                        # choice == 2 (取消) 或 None (ESC/Ctrl+C)
                         if self.interactive:
                             print("  ⎿  Cancelled")
                         executed.append((tool_call, {"success": False, "error": "用户取消操作"}))
                         continue
-                    # 记录已确认的操作
-                    confirmed_operations.add(operation_key)
             else:
                 # 不需要确认的操作
                 if self.interactive:

@@ -206,6 +206,36 @@ def _cmd_logs():
         print(f"  [{log['timestamp']}] {mark} {log['action_type']}")
 
 
+def _cmd_auth(agent):
+    """查看/管理本次会话的工具授权"""
+    granted = sorted(agent.session_authorized_tools)
+    if not granted:
+        print(f"{_C.GRAY}本次会话尚无工具授权{_C.RESET}")
+        return
+    print(f"{_C.GRAY}本次会话已授权的工具 ({len(granted)} 个):{_C.RESET}")
+    for i, tool in enumerate(granted, 1):
+        print(f"  {i}. {_C.YELLOW}{tool}{_C.RESET}")
+    choice = input(
+        f"{_C.GRAY}输入序号撤销 / 'all' 全部清空 / 回车退出{_C.RESET}\n{_C.GREEN}> {_C.RESET}"
+    ).strip().lower()
+    if not choice:
+        return
+    if choice in ("all", "a", "c", "clear"):
+        n = agent.revoke_session_authorizations()
+        print(f"{_C.GRAY}已清空 {n} 条会话授权{_C.RESET}")
+        return
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(granted):
+            tool = granted[idx]
+            agent.session_authorized_tools.discard(tool)
+            print(f"{_C.GRAY}已撤销授权: {tool}{_C.RESET}")
+        else:
+            print(f"{_C.RED}无效序号{_C.RESET}")
+    except ValueError:
+        print(f"{_C.RED}无效输入{_C.RESET}")
+
+
 def _save_and_exit(session_id, agent):
     """保存会话并显示统计"""
     save_session(session_id, agent.messages)
@@ -228,6 +258,7 @@ def _print_help():
   {_C.YELLOW}/logs{_C.RESET}       查看最近操作日志 (别名: /log, /l)
   {_C.YELLOW}/save{_C.RESET}       手动保存当前会话 (别名: /s)
   {_C.YELLOW}/model{_C.RESET}      切换模型 (别名: /m)
+  {_C.YELLOW}/auth{_C.RESET}       查看/管理本次会话的工具授权
   {_C.YELLOW}/undo{_C.RESET} [N]   撤销最近 N 次文件操作 (别名: /u)
   {_C.YELLOW}/undo-list{_C.RESET}  查看可撤销的操作历史 (别名: /ul, /undolist)
   {_C.YELLOW}/quit{_C.RESET}       退出程序 (别名: /q, /exit)""")
@@ -296,6 +327,9 @@ def main():
                     continue
                 elif cmd in ["logs", "log", "l"]:
                     _cmd_logs()
+                    continue
+                elif cmd == "auth":
+                    _cmd_auth(agent)
                     continue
                 elif cmd in ["model", "m"]:
                     new_provider = select_model()

@@ -47,7 +47,18 @@ class TestProcessMultiTurn:
 
 class TestConfirm:
     def test_confirm_reject(self, monkeypatch):
-        monkeypatch.setattr("builtins.input", lambda _: "n")
+        monkeypatch.setattr(agent_module, "select_option", lambda *a, **kw: 2)
+        provider = MockProvider(responses=[
+            {"content": "", "tool_calls": [{"id": "t1", "name": "delete_file", "arguments": {"path": "/tmp/dummy.txt"}}]},
+            {"content": "cancelled", "tool_calls": []},
+        ])
+        agent = FileAgent(provider)
+        result = agent.process("delete it", confirm_required=True)
+        assert result == "cancelled"
+
+    def test_confirm_esc_cancels(self, monkeypatch):
+        # ESC/Ctrl+C 让 select_option 返回 None,效果同选 "取消"
+        monkeypatch.setattr(agent_module, "select_option", lambda *a, **kw: None)
         provider = MockProvider(responses=[
             {"content": "", "tool_calls": [{"id": "t1", "name": "delete_file", "arguments": {"path": "/tmp/dummy.txt"}}]},
             {"content": "cancelled", "tool_calls": []},
@@ -141,3 +152,132 @@ class TestFormatToolCall:
         desc = agent._format_tool_call("batch_operations", {"operations": ops})
         assert "10" in desc
         assert "省略" in desc
+
+
+class TestSessionAuthorization:
+    """会话级工具授权"""
+
+    DEFAULT_CFG = {
+        "confirm_delete": True,
+        "confirm_overwrite": True,
+        "max_tool_iterations": 8,
+        "max_request_time": 300,
+        "tool_timeout": 30,
+    }
+
+    def _patch_common(self, monkeypatch, cfg=None):
+        monkeypatch.setattr(agent_module, "get_config", lambda: cfg or self.DEFAULT_CFG)
+        monkeypatch.setattr(agent_module, "log_action", lambda *a, **kw: None)
+
+    def _patch_tool(self, monkeypatch, name, fn=None):
+        fn = fn or (lambda **kw: {"success": True, "message": "ok"})
+        monkeypatch.setattr(agent_module, "TOOL_REGISTRY", {name: fn})
+
+    def test_is_session_authorized_normal(self):
+        agent = FileAgent(MockProvider())
+        agent.session_authorized_tools.add("delete_file")
+        assert agent._is_session_authorized("delete_file", {"path": "/tmp/x"}) is True
+        assert agent._is_session_authorized("write_file", {"path": "/tmp/x", "content": ""}) is False
+
+    def test_is_session_authorized_batch_partial(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        agent = FileAgent(MockProvider())
+        agent.session_authorized_tools.add("delete_file")
+        ops = [
+            {"tool": "delete_file", "arguments": {"path": "/tmp/a"}},
+            {"tool": "write_file", "arguments": {"path": "/tmp/b", "content": "x"}},
+        ]
+        # 只授权了 delete_file,batch 整体仍未完全授权
+        assert agent._is_session_authorized("batch_operations", {"operations": ops}) is False
+        agent.session_authorized_tools.add("write_file")
+        assert agent._is_session_authorized("batch_operations", {"operations": ops}) is True
+
+    def test_is_session_authorized_batch_only_safe_subops(self, monkeypatch):
+        """batch 内全是不需要确认的子工具时,即使授权集为空也视为已授权"""
+        self._patch_common(monkeypatch)
+        agent = FileAgent(MockProvider())
+        ops = [
+            {"tool": "create_folder", "arguments": {"path": "/tmp/a"}},
+            {"tool": "create_file", "arguments": {"path": "/tmp/b"}},
+        ]
+        assert agent._is_session_authorized("batch_operations", {"operations": ops}) is True
+
+    def test_y_does_not_persist(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        self._patch_tool(monkeypatch, "delete_file")
+        # 0 = 本次允许
+        monkeypatch.setattr(agent_module, "select_option", lambda *a, **kw: 0)
+
+        provider = MockProvider(responses=[
+            {"content": "", "tool_calls": [
+                {"id": "t1", "name": "delete_file", "arguments": {"path": "/tmp/x"}}
+            ]},
+            {"content": "done", "tool_calls": []},
+        ])
+        agent = FileAgent(provider, interactive=False)
+        agent.process("delete x", confirm_required=True)
+        assert "delete_file" not in agent.session_authorized_tools
+
+    def test_a_persists_across_requests(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        self._patch_tool(monkeypatch, "delete_file")
+        # select_option 仅会被消费一次 (1=本次会话允许);若第二次请求又问就会 StopIteration
+        choices = iter([1])
+        monkeypatch.setattr(agent_module, "select_option", lambda *a, **kw: next(choices))
+
+        provider = MockProvider(responses=[
+            {"content": "", "tool_calls": [
+                {"id": "t1", "name": "delete_file", "arguments": {"path": "/tmp/x"}}
+            ]},
+            {"content": "done", "tool_calls": []},
+            {"content": "", "tool_calls": [
+                {"id": "t2", "name": "delete_file", "arguments": {"path": "/tmp/y"}}
+            ]},
+            {"content": "done", "tool_calls": []},
+        ])
+        agent = FileAgent(provider, interactive=False)
+        agent.process("delete x", confirm_required=True)
+        assert "delete_file" in agent.session_authorized_tools
+
+        # 第二次请求,不应触发 select_option
+        agent.process("delete y", confirm_required=True)
+        assert "delete_file" in agent.session_authorized_tools
+
+    def test_batch_a_authorizes_sub_tools(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        self._patch_tool(monkeypatch, "batch_operations")
+        # 1 = 本次会话允许
+        monkeypatch.setattr(agent_module, "select_option", lambda *a, **kw: 1)
+
+        ops = [
+            {"tool": "delete_file", "arguments": {"path": "/tmp/a"}},
+            {"tool": "write_file", "arguments": {"path": "/tmp/b", "content": "x"}},
+            {"tool": "create_folder", "arguments": {"path": "/tmp/c"}},
+        ]
+        provider = MockProvider(responses=[
+            {"content": "", "tool_calls": [
+                {"id": "t1", "name": "batch_operations", "arguments": {"operations": ops}}
+            ]},
+            {"content": "done", "tool_calls": []},
+        ])
+        agent = FileAgent(provider, interactive=False)
+        agent.process("organize", confirm_required=True)
+        assert "delete_file" in agent.session_authorized_tools
+        assert "write_file" in agent.session_authorized_tools
+        # create_folder 本身不需确认,不应被加入授权集
+        assert "create_folder" not in agent.session_authorized_tools
+
+    def test_set_session_keeps_authorization(self):
+        agent = FileAgent(MockProvider())
+        agent.session_authorized_tools.add("delete_file")
+        agent.set_session("another_session")
+        assert "delete_file" in agent.session_authorized_tools
+
+    def test_revoke_clears_all(self):
+        agent = FileAgent(MockProvider())
+        agent.session_authorized_tools.update({"delete_file", "write_file"})
+        n = agent.revoke_session_authorizations()
+        assert n == 2
+        assert agent.session_authorized_tools == set()
+        # 再次 revoke 返回 0
+        assert agent.revoke_session_authorizations() == 0
