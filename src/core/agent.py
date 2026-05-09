@@ -8,6 +8,7 @@ from ..file.basic import TOOL_REGISTRY, TOOL_SCHEMAS
 from ..security.undo import set_active_session
 from ..infra.utils import log_action
 from ..infra.config import get_config
+from ..infra.constants import ConfigDefaults
 from ..ui.tui import select_option
 
 logger = logging.getLogger(__name__)
@@ -151,7 +152,7 @@ class FileAgent:
             logger.warning(error_msg)
             return {"success": False, "error": error_msg}
 
-        timeout = get_config().get("tool_timeout", 30)
+        timeout = get_config().get("tool_timeout", ConfigDefaults.TOOL_TIMEOUT)
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(TOOL_REGISTRY[tool_name], **tool_args)
@@ -243,8 +244,8 @@ class FileAgent:
         self.messages.append({"role": "user", "content": user_input})
         start_time = time.time()
         cfg = get_config()
-        max_iterations = int(cfg.get("max_tool_iterations", 8))
-        max_time = float(cfg.get("max_request_time", 300))
+        max_iterations = int(cfg.get("max_tool_iterations", ConfigDefaults.MAX_TOOL_ITERATIONS))
+        max_time = float(cfg.get("max_request_time", ConfigDefaults.MAX_REQUEST_TIME))
 
         # 在同一次请求中记录已确认的操作，避免重复询问
         confirmed_operations = set()

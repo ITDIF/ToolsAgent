@@ -8,6 +8,7 @@
 import sys
 from typing import List, Optional
 
+from ..infra.constants import UIConstants
 
 # ANSI 转义码
 _CLEAR_LINE = "\033[2K"
@@ -53,7 +54,7 @@ def _read_key_posix() -> Optional[str]:
         ch = sys.stdin.read(1)
         if ch == "\x1b":
             # 50ms 内有后续输入则视为方向键转义序列;否则单 ESC
-            r, _, _ = _sel.select([sys.stdin], [], [], 0.05)
+            r, _, _ = _sel.select([sys.stdin], [], [], UIConstants.KEY_SEQUENCE_TIMEOUT_MS / 1000)
             if not r:
                 return "ESC"
             ch2 = sys.stdin.read(1)

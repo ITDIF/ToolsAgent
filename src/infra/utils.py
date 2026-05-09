@@ -6,9 +6,38 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+from .constants import FileConstants
+
 logger = logging.getLogger(__name__)
 
 LOG_FILENAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.jsonl$")
+
+
+def _sanitize_string(value: str) -> str:
+    """清理字符串中的非法 Unicode 代理字符，确保可被 UTF-8 编码。
+
+    部分 LLM API 会返回孤立的代理字符（如 \\udcaa），直接序列化或写入文件时会抛出
+    UnicodeEncodeError。此函数将其替换为替代字符（�）。
+    """
+    return value.encode("utf-8", errors="replace").decode("utf-8")
+
+
+def sanitize_for_json(obj: Any) -> Any:
+    """递归清理数据结构中的非法 Unicode 字符，确保 json.dumps 安全。
+
+    Args:
+        obj: 任意 Python 对象（dict/list/str/...）
+
+    Returns:
+        清理后的对象副本
+    """
+    if isinstance(obj, str):
+        return _sanitize_string(obj)
+    if isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sanitize_for_json(item) for item in obj]
+    return obj
 
 
 def get_log_dir():
@@ -73,8 +102,9 @@ def log_action(action_type: str, params: Dict[str, Any], result: Dict[str, Any])
     }
 
     try:
+        safe_entry = sanitize_for_json(log_entry)
         with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+            f.write(json.dumps(safe_entry, ensure_ascii=False) + "\n")
     except Exception as e:
         logger.warning("log_action(%s) failed: %s", action_type, e)
 
@@ -104,7 +134,7 @@ def get_recent_logs(limit: int = 10) -> List[Dict[str, Any]]:
             pos = file_size
             while pos > 0 and len(logs) < limit:
                 # 每次读取一个块
-                read_size = min(8192, pos)
+                read_size = min(FileConstants.CHUNK_READ_SIZE, pos)
                 pos -= read_size
                 f.seek(pos)
                 chunk = f.read(read_size).decode("utf-8", errors="ignore")

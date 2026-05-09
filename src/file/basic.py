@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 
 from ..security.sandbox import assert_safe_write_path, PathSafetyError
 from ..infra.config import get_config
+from ..infra.constants import ConfigDefaults, FileConstants
 from ..security.undo import (
     UndoActionType,
     push_undo,
@@ -204,7 +205,7 @@ def read_file(path: str) -> Dict[str, Any]:
         return {"success": False, "error": f"路径不是文件: {path}"}
 
     cfg = get_config()
-    max_bytes = int(cfg.get("max_read_bytes", 1024 * 1024))
+    max_bytes = int(cfg.get("max_read_bytes", ConfigDefaults.MAX_READ_BYTES))
 
     try:
         size = file_path.stat().st_size
@@ -319,9 +320,9 @@ def search_files(
         return {"success": False, "error": f"路径不存在: {path}"}
 
     cfg = get_config()
-    max_results = int(cfg.get("max_search_results", 100))
-    max_depth = int(cfg.get("max_search_depth", 10))
-    tool_timeout = float(cfg.get("tool_timeout", 30))
+    max_results = int(cfg.get("max_search_results", ConfigDefaults.MAX_SEARCH_RESULTS))
+    max_depth = int(cfg.get("max_search_depth", ConfigDefaults.MAX_SEARCH_DEPTH))
+    tool_timeout = float(cfg.get("tool_timeout", ConfigDefaults.TOOL_TIMEOUT))
     base_depth = len(dir_path.resolve().parts)
 
     try:
@@ -401,9 +402,9 @@ def _human_size(size_bytes: int) -> str:
     units = ["B", "KB", "MB", "GB", "TB"]
     size = float(size_bytes)
     for unit in units:
-        if abs(size) < 1024.0:
+        if abs(size) < FileConstants.BYTES_PER_KB:
             return f"{size:.2f} {unit}"
-        size /= 1024.0
+        size /= FileConstants.BYTES_PER_KB
     return f"{size:.2f} PB"
 
 
@@ -422,7 +423,7 @@ def scan_disk(
     cfg = get_config()
     max_depth = int(max_depth if max_depth is not None else cfg.get("max_search_depth", 10))
     max_results = int(max_results if max_results is not None else cfg.get("max_search_results", 100))
-    tool_timeout = float(cfg.get("tool_timeout", 30))
+    tool_timeout = float(cfg.get("tool_timeout", ConfigDefaults.TOOL_TIMEOUT))
 
     base = str(dir_path.resolve())
     base_depth = len(dir_path.resolve().parts)

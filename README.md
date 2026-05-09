@@ -74,7 +74,7 @@ XIAOMI_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1
 ### 3. 运行
 
 ```bash
-python main.py
+python -m src.cli.main
 ```
 
 ## 使用示例

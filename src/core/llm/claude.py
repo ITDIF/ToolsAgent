@@ -4,6 +4,8 @@ import anthropic
 from typing import Dict, Any, List, Optional
 
 from .base import BaseLLMProvider
+from ...infra.constants import LLMConstants
+from ...infra.utils import sanitize_for_json
 
 
 class ClaudeProvider(BaseLLMProvider):
@@ -54,7 +56,7 @@ class ClaudeProvider(BaseLLMProvider):
             {
                 "type": "tool_result",
                 "tool_use_id": tc["id"],
-                "content": json.dumps(result, ensure_ascii=False),
+                "content": json.dumps(sanitize_for_json(result), ensure_ascii=False),
             }
             for tc, result in tool_results
         ]
@@ -71,7 +73,7 @@ class ClaudeProvider(BaseLLMProvider):
             "model": self.model,
             "messages": messages,
             "tools": tools,
-            "max_tokens": 4096,
+            "max_tokens": LLMConstants.MAX_TOKENS,
         }
         if system_prompt:
             params["system"] = system_prompt
@@ -111,7 +113,7 @@ class ClaudeProvider(BaseLLMProvider):
         params = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": 4096,
+            "max_tokens": LLMConstants.MAX_TOKENS,
         }
         if system_prompt:
             params["system"] = system_prompt

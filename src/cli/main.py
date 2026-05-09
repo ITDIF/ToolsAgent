@@ -2,6 +2,8 @@ import os
 import sys
 import io
 import time
+import logging
+from pathlib import Path
 from dotenv import load_dotenv
 
 # 在 Windows 上设置标准输出为 UTF-8 以正确显示中文
@@ -19,18 +21,11 @@ from src.infra.session import (
 )
 from src.infra.utils import get_recent_logs, cleanup_old_logs
 from src.infra.config import get_config
+from src.infra.logging_config import configure_logging
 from src.security.undo import cleanup_old_backups, undo_last, set_active_session, get_undo_history
 
 
-class _C:
-    """终端颜色代码"""
-    GREEN = "\033[32m"
-    RED = "\033[31m"
-    YELLOW = "\033[33m"
-    GRAY = "\033[90m"
-    DIM = "\033[2m"
-    BOLD = "\033[1m"
-    RESET = "\033[0m"
+from src.ui.console import Color
 
 
 # 模型 Provider 注册表(主键即菜单顺序)
@@ -170,12 +165,12 @@ def _cmd_history(agent):
     """加载历史会话"""
     sessions = list_sessions()
     if not sessions:
-        print(f"{_C.GRAY}没有历史会话{_C.RESET}")
+        print(f"{Color.GRAY}没有历史会话{Color.RESET}")
         return None, None
-    print(f"{_C.GRAY}历史会话:{_C.RESET}")
+    print(f"{Color.GRAY}历史会话:{Color.RESET}")
     for i, s in enumerate(sessions, 1):
         print(f"  {i}. {s['id']} ({s['message_count']}条消息, {s['updated_at']})")
-    idx = input(f"{_C.GRAY}输入序号加载会话 (按回车取消){_C.RESET}\n{_C.GREEN}> {_C.RESET}").strip()
+    idx = input(f"{Color.GRAY}输入序号加载会话 (按回车取消){Color.RESET}\n{Color.GREEN}> {Color.RESET}").strip()
     if not idx:
         return None, None
     try:
@@ -184,16 +179,16 @@ def _cmd_history(agent):
             sid = sessions[idx]['id']
             msgs = load_session(sid)
             if msgs is not None:
-                print(f"{_C.GRAY}已加载会话: {sid}{_C.RESET}")
+                print(f"{Color.GRAY}已加载会话: {sid}{Color.RESET}")
                 return sid, msgs
             else:
-                print(f"{_C.RED}加载失败{_C.RESET}")
+                print(f"{Color.RED}加载失败{Color.RESET}")
                 return None, None
         else:
-            print(f"{_C.RED}无效选项{_C.RESET}")
+            print(f"{Color.RED}无效选项{Color.RESET}")
             return None, None
     except ValueError:
-        print(f"{_C.RED}无效输入{_C.RESET}")
+        print(f"{Color.RED}无效输入{Color.RESET}")
         return None, None
 
 
@@ -201,12 +196,12 @@ def _cmd_logs():
     """查看操作日志"""
     logs = get_recent_logs(20)
     if not logs:
-        print(f"{_C.GRAY}没有操作记录{_C.RESET}")
+        print(f"{Color.GRAY}没有操作记录{Color.RESET}")
         return
-    print(f"{_C.GRAY}最近操作记录:{_C.RESET}")
+    print(f"{Color.GRAY}最近操作记录:{Color.RESET}")
     for log in logs:
         result = log['result']
-        mark = f"{_C.GREEN}✓{_C.RESET}" if result.get('success') else f"{_C.RED}✗{_C.RESET}"
+        mark = f"{Color.GREEN}✓{Color.RESET}" if result.get('success') else f"{Color.RED}✗{Color.RESET}"
         print(f"  [{log['timestamp']}] {mark} {log['action_type']}")
 
 
@@ -214,64 +209,68 @@ def _cmd_auth(agent):
     """查看/管理本次会话的工具授权"""
     granted = sorted(agent.session_authorized_tools)
     if not granted:
-        print(f"{_C.GRAY}本次会话尚无工具授权{_C.RESET}")
+        print(f"{Color.GRAY}本次会话尚无工具授权{Color.RESET}")
         return
-    print(f"{_C.GRAY}本次会话已授权的工具 ({len(granted)} 个):{_C.RESET}")
+    print(f"{Color.GRAY}本次会话已授权的工具 ({len(granted)} 个):{Color.RESET}")
     for i, tool in enumerate(granted, 1):
-        print(f"  {i}. {_C.YELLOW}{tool}{_C.RESET}")
+        print(f"  {i}. {Color.YELLOW}{tool}{Color.RESET}")
     choice = input(
-        f"{_C.GRAY}输入序号撤销 / 'all' 全部清空 / 回车退出{_C.RESET}\n{_C.GREEN}> {_C.RESET}"
+        f"{Color.GRAY}输入序号撤销 / 'all' 全部清空 / 回车退出{Color.RESET}\n{Color.GREEN}> {Color.RESET}"
     ).strip().lower()
     if not choice:
         return
     if choice in ("all", "a", "c", "clear"):
         n = agent.revoke_session_authorizations()
-        print(f"{_C.GRAY}已清空 {n} 条会话授权{_C.RESET}")
+        print(f"{Color.GRAY}已清空 {n} 条会话授权{Color.RESET}")
         return
     try:
         idx = int(choice) - 1
         if 0 <= idx < len(granted):
             tool = granted[idx]
             agent.session_authorized_tools.discard(tool)
-            print(f"{_C.GRAY}已撤销授权: {tool}{_C.RESET}")
+            print(f"{Color.GRAY}已撤销授权: {tool}{Color.RESET}")
         else:
-            print(f"{_C.RED}无效序号{_C.RESET}")
+            print(f"{Color.RED}无效序号{Color.RESET}")
     except ValueError:
-        print(f"{_C.RED}无效输入{_C.RESET}")
+        print(f"{Color.RED}无效输入{Color.RESET}")
 
 
 def _save_and_exit(session_id, agent):
     """保存会话并显示统计"""
     save_session(session_id, agent.messages)
     usage = agent.get_token_usage()
-    print(f"\n{_C.GRAY}本次会话 Token 统计:{_C.RESET}")
+    print(f"\n{Color.GRAY}本次会话 Token 统计:{Color.RESET}")
     print(f"  输入: {usage['input']}  输出: {usage['output']}  总计: {usage['total']}")
-    print(f"\n{_C.GRAY}会话已保存，再见!{_C.RESET}")
+    print(f"\n{Color.GRAY}会话已保存，再见!{Color.RESET}")
 
 
 def _print_stats(elapsed, before_usage, after_usage):
     """打印时间和 Token 统计"""
     delta_total = after_usage["total"] - before_usage["total"]
-    print(f"{_C.GRAY}  [{elapsed:.2f}s | +{delta_total}t | all：{after_usage['total']}]{_C.RESET}")
+    print(f"{Color.GRAY}  [{elapsed:.2f}s | +{delta_total}t | all：{after_usage['total']}]{Color.RESET}")
 
 
 def _print_help():
-    print(f"""{_C.GRAY}可用命令:{_C.RESET}
-  {_C.YELLOW}/help{_C.RESET}       显示此帮助 (别名: /h)
-  {_C.YELLOW}/history{_C.RESET}    加载历史会话 (别名: /his)
-  {_C.YELLOW}/logs{_C.RESET}       查看最近操作日志 (别名: /log, /l)
-  {_C.YELLOW}/save{_C.RESET}       手动保存当前会话 (别名: /s)
-  {_C.YELLOW}/model{_C.RESET}      切换模型 (别名: /m)
-  {_C.YELLOW}/auth{_C.RESET}       查看/管理本次会话的工具授权
-  {_C.YELLOW}/undo{_C.RESET} [N]   撤销最近 N 次文件操作 (别名: /u)
-  {_C.YELLOW}/undo-list{_C.RESET}  查看可撤销的操作历史 (别名: /ul, /undolist)
-  {_C.YELLOW}/quit{_C.RESET}       退出程序 (别名: /q, /exit)""")
+    print(f"""{Color.GRAY}可用命令:{Color.RESET}
+  {Color.YELLOW}/help{Color.RESET}       显示此帮助 (别名: /h)
+  {Color.YELLOW}/history{Color.RESET}    加载历史会话 (别名: /his)
+  {Color.YELLOW}/logs{Color.RESET}       查看最近操作日志 (别名: /log, /l)
+  {Color.YELLOW}/save{Color.RESET}       手动保存当前会话 (别名: /s)
+  {Color.YELLOW}/model{Color.RESET}      切换模型 (别名: /m)
+  {Color.YELLOW}/auth{Color.RESET}       查看/管理本次会话的工具授权
+  {Color.YELLOW}/undo{Color.RESET} [N]   撤销最近 N 次文件操作 (别名: /u)
+  {Color.YELLOW}/undo-list{Color.RESET}  查看可撤销的操作历史 (别名: /ul, /undolist)
+  {Color.YELLOW}/quit{Color.RESET}       退出程序 (别名: /q, /exit)""")
 
 
 def main():
     load_dotenv()
 
-    print(f"{_C.BOLD}本地文件操作助手{_C.RESET}  {_C.GRAY}—  输入 /help 查看命令{_C.RESET}")
+    # 配置日志
+    log_dir = Path.home() / ".toolsagent" / "logs"
+    configure_logging(level=logging.INFO, log_dir=log_dir)
+
+    print(f"{Color.BOLD}本地文件操作助手{Color.RESET}  {Color.GRAY}—  输入 /help 查看命令{Color.RESET}")
     print()
 
     # 检查是否有默认模型配置
@@ -287,24 +286,24 @@ def main():
 
     # 如果默认模型加载失败，提示用户选择
     if not provider:
-        print(f"{_C.RED}无法加载默认模型 '{default_model}'{_C.RESET}")
+        print(f"{Color.RED}无法加载默认模型 '{default_model}'{Color.RESET}")
         print()
         provider = select_model()
         if not provider:
             return
     else:
-        print(f"{_C.GRAY}已加载默认模型: {default_model}{_C.RESET}")
+        print(f"{Color.GRAY}已加载默认模型: {default_model}{Color.RESET}")
 
     # 默认新建会话
     session_id = generate_session_id()
     agent = FileAgent(provider, session_id=session_id, interactive=True)
 
-    print(f"{_C.GRAY}新会话 {session_id}{_C.RESET}")
+    print(f"{Color.GRAY}新会话 {session_id}{Color.RESET}")
     _print_help()
 
     while True:
         try:
-            user_input = input(f"{_C.GREEN}> {_C.RESET}").strip()
+            user_input = input(f"{Color.GREEN}> {Color.RESET}").strip()
 
             if not user_input:
                 continue
@@ -320,7 +319,7 @@ def main():
                     break
                 elif cmd in ["save", "s"]:
                     save_session(session_id, agent.messages)
-                    print(f"{_C.GRAY}已保存{_C.RESET}")
+                    print(f"{Color.GRAY}已保存{Color.RESET}")
                     continue
                 elif cmd in ["history", "his"]:
                     sid, msgs = _cmd_history(agent)
@@ -339,7 +338,7 @@ def main():
                     new_provider = select_model()
                     if new_provider:
                         agent.llm = new_provider
-                        print(f"{_C.GREEN}模型已切换{_C.RESET}")
+                        print(f"{Color.GREEN}模型已切换{Color.RESET}")
                     continue
                 elif cmd in ["help", "h"]:
                     _print_help()
@@ -351,7 +350,7 @@ def main():
                         try:
                             count = max(1, int(arg_str.strip()))
                         except ValueError:
-                            print(f"{_C.RED}无效步数: {arg_str}{_C.RESET}")
+                            print(f"{Color.RED}无效步数: {arg_str}{Color.RESET}")
                             continue
                     result = undo_last(count=count)
                     if result["success"] or result.get("undone", 0) > 0:
@@ -359,29 +358,29 @@ def main():
                             if r["success"]:
                                 msg = r["message"]
                                 if isinstance(msg, dict):
-                                    print(f"{_C.GREEN}✓{_C.RESET} {msg['label']}")
+                                    print(f"{Color.GREEN}✓{Color.RESET} {msg['label']}")
                                     for sr in msg.get("sub_results", []):
-                                        mark = f"{_C.GREEN}✓{_C.RESET}" if sr["success"] else f"{_C.RED}✗{_C.RESET}"
+                                        mark = f"{Color.GREEN}✓{Color.RESET}" if sr["success"] else f"{Color.RED}✗{Color.RESET}"
                                         print(f"  {mark} {sr.get('message') or sr.get('error')}")
                                 else:
-                                    print(f"{_C.GREEN}✓{_C.RESET} {msg}")
+                                    print(f"{Color.GREEN}✓{Color.RESET} {msg}")
                             else:
-                                print(f"{_C.RED}✗{_C.RESET} {r.get('error')}")
+                                print(f"{Color.RED}✗{Color.RESET} {r.get('error')}")
                     else:
-                        print(f"{_C.RED}撤销失败: {result.get('error')}{_C.RESET}")
+                        print(f"{Color.RED}撤销失败: {result.get('error')}{Color.RESET}")
                     continue
                 elif cmd in ("undo-list", "undolist", "ul"):
                     set_active_session(agent.session_id)
                     h = get_undo_history()
                     if not h["items"]:
-                        print(f"{_C.GRAY}撤销栈为空{_C.RESET}")
+                        print(f"{Color.GRAY}撤销栈为空{Color.RESET}")
                     else:
-                        print(f"{_C.GRAY}撤销栈 ({h['count']} 条):{_C.RESET}")
+                        print(f"{Color.GRAY}撤销栈 ({h['count']} 条):{Color.RESET}")
                         for it in h["items"]:
                             print(f"  {it['index']}. [{it['type']}] {it['description']}")
                     continue
                 else:
-                    print(f"{_C.RED}未知命令{_C.RESET}  {user_input}")
+                    print(f"{Color.RED}未知命令{Color.RESET}  {user_input}")
                     continue
 
             # 普通对话
@@ -401,7 +400,7 @@ def main():
             _save_and_exit(session_id, agent)
             break
         except Exception as e:
-            print(f"{_C.RED}错误: {e}{_C.RESET}")
+            print(f"{Color.RED}错误: {e}{Color.RESET}")
 
 
 if __name__ == "__main__":

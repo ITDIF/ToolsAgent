@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+from .utils import sanitize_for_json
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,7 +35,7 @@ def save_session(session_id: str, messages: List[Dict[str, Any]]) -> bool:
         data = {
             "session_id": session_id,
             "updated_at": datetime.datetime.now().isoformat(),
-            "messages": messages
+            "messages": sanitize_for_json(messages)
         }
         with open(session_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)

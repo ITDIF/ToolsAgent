@@ -6,6 +6,8 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
+from ..infra.constants import UndoConstants
+
 logger = __import__("logging").getLogger(__name__)
 
 
@@ -29,7 +31,7 @@ class UndoActionType:
 class UndoManager:
     """撤销管理器，管理撤销栈和批量操作上下文"""
 
-    def __init__(self, max_undo: int = 50):
+    def __init__(self, max_undo: int = UndoConstants.MAX_UNDO):
         self._undo_stacks: Dict[str, List[Dict[str, Any]]] = {}
         self._active_session_id: str = "default"
         self._max_undo: int = max_undo
@@ -73,10 +75,10 @@ class UndoManager:
                     self._cleanup_action_backup(action)
             self._undo_stacks.clear()
 
-    def cleanup_old_backups(self, max_age_hours: int = 24) -> int:
+    def cleanup_old_backups(self, max_age_hours: int = UndoConstants.BACKUP_MAX_AGE_HOURS) -> int:
         """清理超过 max_age_hours 的临时备份目录"""
         tmpdir = Path(tempfile.gettempdir())
-        cutoff = time.time() - max_age_hours * 3600
+        cutoff = time.time() - max_age_hours * UndoConstants.SECONDS_PER_HOUR
         count = 0
         for p in tmpdir.glob("toolsagent_backup_*"):
             try:
@@ -405,7 +407,7 @@ def clear_all_undo_stacks() -> None:
     get_undo_manager().clear_all_undo_stacks()
 
 
-def cleanup_old_backups(max_age_hours: int = 24) -> int:
+def cleanup_old_backups(max_age_hours: int = UndoConstants.BACKUP_MAX_AGE_HOURS) -> int:
     """清理超过 max_age_hours 的临时备份目录"""
     return get_undo_manager().cleanup_old_backups(max_age_hours)
 

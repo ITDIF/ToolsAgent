@@ -2,14 +2,17 @@ import json
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 
+from ...infra.constants import LLMConstants
+from ...infra.utils import sanitize_for_json
+
 
 class BaseLLMProvider(ABC):
     """LLM Provider 抽象基类"""
 
     def __init__(self):
         self.token_usage: Dict[str, int] = {"input": 0, "output": 0, "total": 0}
-        self.max_retries: int = 3
-        self.timeout: float = 60.0
+        self.max_retries: int = LLMConstants.MAX_RETRIES
+        self.timeout: float = LLMConstants.TIMEOUT
 
     def reset_token_usage(self) -> None:
         """重置 token 计数"""
@@ -52,7 +55,7 @@ class BaseLLMProvider(ABC):
                     "type": "function",
                     "function": {
                         "name": tc["name"],
-                        "arguments": json.dumps(tc["arguments"], ensure_ascii=False),
+                        "arguments": json.dumps(sanitize_for_json(tc["arguments"]), ensure_ascii=False),
                     },
                 }
                 for tc in tool_calls
@@ -73,7 +76,7 @@ class BaseLLMProvider(ABC):
             {
                 "role": "tool",
                 "tool_call_id": tc["id"],
-                "content": json.dumps(result, ensure_ascii=False),
+                "content": json.dumps(sanitize_for_json(result), ensure_ascii=False),
             }
             for tc, result in tool_results
         ]
