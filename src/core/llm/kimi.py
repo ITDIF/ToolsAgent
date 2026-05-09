@@ -1,4 +1,3 @@
-
 import os
 from .base import OpenAICompatibleProvider
 
@@ -12,4 +11,3 @@ class KimiProvider(OpenAICompatibleProvider):
             base_url="https://api.moonshot.cn/v1",
             model=model
         )
-

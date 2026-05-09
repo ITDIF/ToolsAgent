@@ -1,14 +1,14 @@
-
 import sys
 import threading
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from file_ops import TOOL_REGISTRY, TOOL_SCHEMAS
-from undo_manager import set_active_session
-from utils import log_action
-from config import get_config
-from tui import select_option
+
+from ..file.basic import TOOL_REGISTRY, TOOL_SCHEMAS
+from ..security.undo import set_active_session
+from ..infra.utils import log_action
+from ..infra.config import get_config
+from ..ui.tui import select_option
 
 logger = logging.getLogger(__name__)
 
@@ -388,4 +388,3 @@ class FileAgent:
             return f"压缩 {src_str} -> {args['archive_path']}"
         else:
             return f"{tool_name} {args}"
-

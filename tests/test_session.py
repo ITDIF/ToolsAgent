@@ -3,7 +3,7 @@ import json
 import shutil
 import pytest
 
-from session import (
+from src.infra.session import (
     save_session, load_session, list_sessions, delete_session,
     generate_session_id, get_session_dir
 )

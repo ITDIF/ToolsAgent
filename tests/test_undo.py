@@ -4,12 +4,12 @@ import time
 from pathlib import Path
 import pytest
 
-from file_ops import (
+from src.file.basic import (
     move_file, copy_file, delete_file, create_folder, create_file,
-    write_file, rename_file, extract_archive, create_archive, undo_last,
-    get_undo_history, batch_operations
+    write_file, rename_file, undo_last, get_undo_history, batch_operations
 )
-from undo_manager import (
+from src.file.archive import extract_archive, create_archive
+from src.security.undo import (
     get_undo_stack, clear_undo_stack, set_active_session, cleanup_old_backups
 )
 
@@ -454,8 +454,8 @@ class TestSessionIsolation:
         assert get_undo_history()["count"] == 1
 
     def test_agent_set_session(self):
-        from agent import FileAgent
-        from providers.base import BaseLLMProvider
+        from src.core.agent import FileAgent
+        from src.core.llm.base import BaseLLMProvider
 
         class DummyProvider(BaseLLMProvider):
             def chat_with_tools(self, **kwargs):
@@ -471,7 +471,7 @@ class TestSessionIsolation:
 
 class TestCleanupOldBackups:
     def test_cleans_only_old_backups(self, tmp_path, monkeypatch):
-        from undo_manager import cleanup_old_backups
+        from src.security.undo import cleanup_old_backups
         # 伪造临时目录
         monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
         old_dir = tmp_path / "toolsagent_backup_old"

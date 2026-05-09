@@ -1,6 +1,6 @@
 
 import pytest
-from providers.base import BaseLLMProvider, OpenAICompatibleProvider
+from src.core.llm.base import BaseLLMProvider, OpenAICompatibleProvider
 
 
 class TestBaseLLMProvider:

@@ -5,9 +5,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Union, Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
-from path_safety import assert_safe_write_path, PathSafetyError
-from config import get_config
-from undo_manager import (
+from ..security.sandbox import assert_safe_write_path, PathSafetyError
+from ..infra.config import get_config
+from ..security.undo import (
     UndoActionType,
     push_undo,
     capture_target_state,
@@ -18,8 +18,7 @@ from undo_manager import (
     _set_batch_context,
     _clear_batch_context,
 )
-from archive_ops import extract_archive, create_archive
-
+from ..infra.utils import log_action
 
 logger = __import__("logging").getLogger(__name__)
 
@@ -120,7 +119,7 @@ def delete_file(path: str) -> Dict[str, Any]:
 
     try:
         # 备份被删除的文件/文件夹
-        from undo_manager import get_undo_manager
+        from ..security.undo import get_undo_manager
         backup_path = get_undo_manager()._backup_file(path)
         if file_path.is_file():
             file_path.unlink()
@@ -586,10 +585,11 @@ def batch_operations(
 
 
 # 导出旧的函数签名以保持兼容
-undo_last = lambda count=1: __import__("undo_manager").undo_last(count)
-get_undo_history = lambda limit=20: __import__("undo_manager").get_undo_history(limit)
+undo_last = lambda count=1: __import__("src.security.undo", fromlist=["undo_last"]).undo_last(count)
+get_undo_history = lambda limit=20: __import__("src.security.undo", fromlist=["get_undo_history"]).get_undo_history(limit)
 
 
+# 工具注册表
 TOOL_REGISTRY = {
     "move_file": move_file,
     "copy_file": copy_file,
@@ -602,8 +602,8 @@ TOOL_REGISTRY = {
     "search_files": search_files,
     "list_files": list_files,
     "scan_disk": scan_disk,
-    "extract_archive": extract_archive,
-    "create_archive": create_archive,
+    "extract_archive": lambda **kw: __import__("src.file.archive", fromlist=["extract_archive"]).extract_archive(**kw),
+    "create_archive": lambda **kw: __import__("src.file.archive", fromlist=["create_archive"]).create_archive(**kw),
     "undo_last": undo_last,
     "undo_history": get_undo_history,
     "batch_operations": batch_operations,
@@ -822,3 +822,4 @@ TOOL_SCHEMAS = [
         }
     }
 ]
+

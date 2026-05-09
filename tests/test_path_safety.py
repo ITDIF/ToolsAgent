@@ -3,7 +3,7 @@ import sys
 import tempfile
 import pytest
 
-from path_safety import (
+from src.security.sandbox import (
     assert_safe_write_path, PathSafetyError, _is_drive_root, _is_under
 )
 

@@ -1,18 +1,21 @@
-
 import os
-import re
 import sys
+import re
 from pathlib import Path
 from typing import Optional, List, Union
 
 
 class PathSafetyError(Exception):
     """路径安全校验失败"""
-    pass
+
+    def __init__(self, message: str, type: Optional[str] = None):
+        super().__init__(message)
+        self.type = type
 
 
 class PathSafetyErrorType:
     """路径安全错误类型常量"""
+
     SYMLINK_FORBIDDEN = "symlink_forbidden"
     DRIVE_ROOT_FORBIDDEN = "drive_root_forbidden"
     NOT_IN_ALLOWED_ROOTS = "not_in_allowed_roots"
@@ -48,7 +51,7 @@ def _default_blocked_roots():
 
 
 def _resolve(path):
-    """解析为绝对路径,即便目标不存在也能推断"""
+    """解析为绝对路径，即便目标不存在也能推断"""
     p = Path(path)
     try:
         return p.resolve(strict=False)
@@ -57,7 +60,7 @@ def _resolve(path):
 
 
 def _is_under(child: Path, parent: Path) -> bool:
-    """child 是否等于或位于 parent 之下(不区分大小写,Windows 常见情形)"""
+    """child 是否等于或位于 parent 之下（不区分大小写，Windows 常见情形）"""
     try:
         child_str = str(child).lower() if sys.platform == "win32" else str(child)
         parent_str = str(parent).lower() if sys.platform == "win32" else str(parent)
@@ -70,7 +73,7 @@ def _is_under(child: Path, parent: Path) -> bool:
 
 
 def _is_drive_root(path: Path) -> bool:
-    """是否是盘符根(如 C:\\)"""
+    """是否是盘符根（如 C:\\）"""
     if sys.platform != "win32":
         return str(path) == "/"
     s = str(path)
@@ -79,12 +82,12 @@ def _is_drive_root(path: Path) -> bool:
 
 def assert_safe_write_path(path: Union[str, Path], config: Optional[dict] = None) -> None:
     """
-    校验路径是否允许写入(创建/修改/删除)。
+    校验路径是否允许写入（创建/修改/删除）。
 
-    规则:
-    - 拒绝符号链接(避免解析后绕过沙箱)
-    - 若 config.allowed_roots 非空: 只允许在白名单目录内
-    - 否则: 只要不落在 blocked_roots/盘符根 即可
+    规则：
+    - 拒绝符号链接（避免解析后绕过沙箱）
+    - 若 config.allowed_roots 非空：只允许在白名单目录内
+    - 否则：只要不落在 blocked_roots/盘符根即可
 
     Args:
         path: 待校验的路径
@@ -93,13 +96,13 @@ def assert_safe_write_path(path: Union[str, Path], config: Optional[dict] = None
     Raises:
         PathSafetyError: 校验不通过时，包含错误类型和详细信息
     """
+
     path_str = str(path)
 
     # 检查路径是否为符号链接
     if os.path.islink(path):
         raise PathSafetyError(
-            f"禁止操作符号链接: {path}",
-            PathSafetyErrorType.SYMLINK_FORBIDDEN
+            f"禁止操作符号链接: {path}", PathSafetyErrorType.SYMLINK_FORBIDDEN
         )
 
     target = _resolve(path)
@@ -108,8 +111,7 @@ def assert_safe_write_path(path: Union[str, Path], config: Optional[dict] = None
     # 检查是否为盘符根目录
     if _is_drive_root(target):
         raise PathSafetyError(
-            f"禁止操作盘符根目录: {path_str}",
-            PathSafetyErrorType.DRIVE_ROOT_FORBIDDEN
+            f"禁止操作盘符根目录: {path_str}", PathSafetyErrorType.DRIVE_ROOT_FORBIDDEN
         )
 
     # 白名单模式
@@ -119,7 +121,7 @@ def assert_safe_write_path(path: Union[str, Path], config: Optional[dict] = None
         if not any(_is_under(target, r) for r in roots):
             raise PathSafetyError(
                 f"路径不在允许的根目录内: {path_str} (allowed_roots={allowed_roots})",
-                PathSafetyErrorType.NOT_IN_ALLOWED_ROOTS
+                PathSafetyErrorType.NOT_IN_ALLOWED_ROOTS,
             )
         return
 
@@ -131,5 +133,5 @@ def assert_safe_write_path(path: Union[str, Path], config: Optional[dict] = None
         if _is_under(target, _resolve(b)):
             raise PathSafetyError(
                 f"禁止操作系统目录: {path_str} (命中 {b})",
-                PathSafetyErrorType.SYSTEM_DIR_FORBIDDEN
+                PathSafetyErrorType.SYSTEM_DIR_FORBIDDEN,
             )

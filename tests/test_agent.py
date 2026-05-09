@@ -1,7 +1,7 @@
 import pytest
-import agent as agent_module
-from agent import FileAgent
-from providers.base import BaseLLMProvider
+from src.core import agent as agent_module
+from src.core.agent import FileAgent
+from src.core.llm.base import BaseLLMProvider
 
 
 class MockProvider(BaseLLMProvider):
@@ -76,6 +76,7 @@ class TestMaxIterations:
         ]
         provider = MockProvider(responses=responses, final_chat="fallback")
         agent = FileAgent(provider)
+        from src.infra.config import get_config
         monkeypatch.setattr(agent_module, "get_config", lambda: {"max_tool_iterations": 2})
         result = agent.process("loop", confirm_required=False)
         assert result == "fallback"
@@ -98,6 +99,7 @@ class TestNeedConfirmBatch:
         return FileAgent(MockProvider())
 
     def test_batch_with_delete_needs_confirm(self, monkeypatch):
+        from src.infra.config import get_config
         agent = self._agent()
         monkeypatch.setattr(agent_module, "get_config", lambda: {"confirm_delete": True, "confirm_overwrite": True})
         ops = [
@@ -107,6 +109,7 @@ class TestNeedConfirmBatch:
         assert agent._need_confirm("batch_operations", {"operations": ops}) is True
 
     def test_batch_without_sensitive_ops_no_confirm(self, monkeypatch):
+        from src.infra.config import get_config
         agent = self._agent()
         monkeypatch.setattr(agent_module, "get_config", lambda: {"confirm_delete": True, "confirm_overwrite": True})
         ops = [
@@ -116,6 +119,7 @@ class TestNeedConfirmBatch:
         assert agent._need_confirm("batch_operations", {"operations": ops}) is False
 
     def test_batch_with_overwrite_respects_config(self, monkeypatch):
+        from src.infra.config import get_config
         agent = self._agent()
         monkeypatch.setattr(agent_module, "get_config", lambda: {"confirm_delete": True, "confirm_overwrite": False})
         ops = [
@@ -166,6 +170,8 @@ class TestSessionAuthorization:
     }
 
     def _patch_common(self, monkeypatch, cfg=None):
+        from src.infra.config import get_config
+        from src.infra.utils import log_action
         monkeypatch.setattr(agent_module, "get_config", lambda: cfg or self.DEFAULT_CFG)
         monkeypatch.setattr(agent_module, "log_action", lambda *a, **kw: None)
 

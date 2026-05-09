@@ -13,9 +13,9 @@ try:
 except ImportError:
     RARFILE_AVAILABLE = False
 
-from path_safety import assert_safe_write_path, PathSafetyError
-from config import get_config
-from undo_manager import (
+from ..security.sandbox import assert_safe_write_path, PathSafetyError
+from ..infra.config import get_config
+from ..security.undo import (
     UndoActionType,
     push_undo,
     capture_target_state,

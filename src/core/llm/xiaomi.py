@@ -11,4 +11,3 @@ class XiaomiProvider(OpenAICompatibleProvider):
             base_url=base_url or os.getenv("XIAOMI_BASE_URL", "https://api.mimo.ai/v1"),
             model=model
         )
-

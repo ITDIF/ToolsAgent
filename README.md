@@ -188,34 +188,67 @@ class MyProvider(OpenAICompatibleProvider):
 
 继承 `BaseLLMProvider`，实现 `chat()` 和 `chat_with_tools()` 方法。
 
-## 项目结构
+## 项目结构（2025年重构）
+
+项目已重构为分层架构，提供更好的可维护性和可扩展性。详细说明请查看 [PROJECT_STRUCTURE.md](./PROJECT_STRUCTURE.md)。
 
 ```
 ToolsAgent/
-├── main.py                    # CLI 入口（命令缩写支持）
-├── agent.py                   # Agent 协调层（多轮工具循环，防重复确认）
-├── config.py                  # 配置管理
-├── file_ops.py                # 文件操作工具（含压缩/解压，写操作走路径沙箱）
-├── path_safety.py             # 路径安全校验（黑/白名单）
-├── utils.py                   # 工具函数（日志写入与清理）
-├── session.py                 # 会话管理
+├── main.py                    # 入口点
+├── src/
+│   ├── cli/                   # 命令行界面层
+│   │   └── main.py            # CLI 入口
+│   ├── core/                  # 核心逻辑层
+│   │   ├── agent.py           # FileAgent 主类
+│   │   └── llm/               # LLM 适配层
+│   │       ├── base.py        # 抽象基类
+│   │       ├── claude.py      # Claude 实现
+│   │       ├── kimi.py        # Kimi 实现
+│   │       ├── doubao.py      # 豆包 实现
+│   │       ├── glm.py         # GLM 实现
+│   │       └── xiaomi.py      # 小米 实现
+│   ├── file/                  # 文件操作层
+│   │   ├── basic.py           # 基础文件操作
+│   │   └── archive.py         # 压缩/解压操作
+│   ├── security/              # 安全层
+│   │   ├── sandbox.py         # 路径安全校验
+│   │   └── undo.py            # 撤销功能管理
+│   ├── infra/                 # 基础设施层
+│   │   ├── config.py          # 配置管理
+│   │   ├── session.py         # 会话管理
+│   │   └── utils.py           # 工具函数
+│   └── ui/                    # 用户界面层
+│       ├── tui.py             # 终端 UI 组件
+│       ├── console.py         # 控制台输出工具
+│       └── prompts.py         # 用户提示
+├── tests/                     # 单元测试
 ├── requirements.txt           # 依赖
 ├── .env                       # 环境变量
 ├── .env.example               # 环境变量示例
 ├── README.md                  # 文档
-├── tests/                     # 单元测试
-│   ├── test_file_ops.py       # 文件操作测试（含压缩/解压）
-│   ├── test_session.py        # 会话管理测试
-│   ├── test_token.py          # Token 计数测试
-│   ├── test_undo.py           # 撤销与批量操作测试
-│   └── test_utils.py          # 工具函数测试
-└── providers/
-    ├── __init__.py            # 导出
-    ├── base.py                # 抽象基类 + OpenAI 兼容基类（含消息格式化）
-    ├── claude.py              # Claude 实现（Anthropic 原生 block 格式）
-    ├── kimi.py                # Kimi 实现
-    ├── doubao.py              # 豆包 实现
-    ├── glm.py                 # GLM 实现
-    └── xiaomi.py              # 小米 实现
+└── PROJECT_STRUCTURE.md       # 架构说明
+```
+
+### 旧结构（归档）
+
+```
+ToolsAgent/
+├── main.py                    # CLI 入口
+├── agent.py                   # Agent 协调层
+├── config.py                  # 配置管理
+├── file_ops.py                # 文件操作工具
+├── path_safety.py             # 路径安全校验
+├── utils.py                   # 工具函数
+├── session.py                 # 会话管理
+├── undo_manager.py            # 撤销管理
+├── tui.py                     # 终端 UI 组件
+└── providers/                 # LLM 提供商
+    ├── __init__.py
+    ├── base.py
+    ├── claude.py
+    ├── kimi.py
+    ├── doubao.py
+    ├── glm.py
+    └── xiaomi.py
 ```
 

@@ -2,7 +2,7 @@ import builtins
 import io
 import sys
 
-import tui
+from src.ui import tui
 
 
 class TestCanUseArrowKeys:

@@ -1,4 +1,3 @@
-
 import os
 import json
 import anthropic
@@ -127,4 +126,3 @@ class ClaudeProvider(BaseLLMProvider):
             )
 
         return response.content[0].text if response.content else ""
-

@@ -2,7 +2,7 @@ import json
 import os
 import pytest
 
-from utils import log_action, get_recent_logs, get_log_path
+from src.infra.utils import log_action, get_recent_logs, get_log_path
 
 
 @pytest.fixture(autouse=True)

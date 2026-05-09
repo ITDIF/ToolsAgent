@@ -3,11 +3,11 @@ import tempfile
 import shutil
 import pytest
 
-from file_ops import (
+from src.file.basic import (
     move_file, copy_file, delete_file, create_folder, create_file,
-    read_file, write_file, rename_file, search_files, list_files, scan_disk,
-    extract_archive, create_archive
+    read_file, write_file, rename_file, search_files, list_files, scan_disk
 )
+from src.file.archive import extract_archive, create_archive
 
 
 @pytest.fixture
