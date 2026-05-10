@@ -9,6 +9,9 @@ import tarfile
 
 logger = logging.getLogger(__name__)
 
+# tarfile.data_filter 在 Python 3.12+ 可用,用于阻止越界/符号链接成员
+_TARFILE_HAS_DATA_FILTER = hasattr(tarfile, "data_filter")
+
 # 可选的 rarfile 库支持
 try:
     import rarfile
@@ -26,6 +29,37 @@ from ..security.undo import (
     _restore_target,
     _remove_target,
 )
+
+
+def _validate_archive_members(names, output_dir: Path) -> Optional[str]:
+    """检查压缩包成员路径是否会落在 output_dir 之外(Zip/Tar Slip 防护)。
+
+    拒绝绝对路径、含 .. 跳出 output_dir 的成员。
+    返回错误消息字符串(若存在不安全成员),全部安全则返回 None。
+    """
+    try:
+        base = output_dir.resolve()
+    except OSError as e:
+        return f"无法解析输出目录: {e}"
+
+    for raw in names:
+        if not raw:
+            continue
+        # 统一分隔符,防止 Windows 下 "subdir\..\..\evil" 被忽略
+        name = str(raw).replace("\\", "/")
+        # 拒绝绝对路径(POSIX 与 Windows 盘符)
+        p = Path(name)
+        if p.is_absolute() or name.startswith("/") or (len(name) >= 2 and name[1] == ":"):
+            return f"压缩包包含绝对路径成员: {raw}"
+        try:
+            target = (base / name).resolve()
+        except OSError as e:
+            return f"无法解析成员路径 {raw!r}: {e}"
+        try:
+            target.relative_to(base)
+        except ValueError:
+            return f"压缩包包含越界路径成员(Zip Slip): {raw}"
+    return None
 
 
 def _find_rar_executable() -> Optional[str]:
@@ -104,6 +138,12 @@ def extract_archive(archive_path: str, output_path: Optional[str] = None) -> Dic
 
         if ext == ".zip":
             with zipfile.ZipFile(archive_p, "r") as zf:
+                err = _validate_archive_members(
+                    [info.filename for info in zf.infolist()], output_p
+                )
+                if err:
+                    _cleanup_snapshot(dst_snap)
+                    return {"success": False, "error": err}
                 zf.extractall(output_p)
         elif ext == ".rar":
             if not RARFILE_AVAILABLE:
@@ -111,6 +151,10 @@ def extract_archive(archive_path: str, output_path: Optional[str] = None) -> Dic
                 return {"success": False, "error": "RAR 文件支持需要安装 rarfile 库: pip install rarfile"}
             try:
                 with rarfile.RarFile(archive_p, "r") as rf:
+                    err = _validate_archive_members(rf.namelist(), output_p)
+                    if err:
+                        _cleanup_snapshot(dst_snap)
+                        return {"success": False, "error": err}
                     rf.extractall(output_p)
             except rarfile.RarCannotExec:
                 _cleanup_snapshot(dst_snap)
@@ -124,7 +168,16 @@ def extract_archive(archive_path: str, output_path: Optional[str] = None) -> Dic
             elif ext == ".tgz":
                 mode = "r:gz"
             with tarfile.open(archive_p, mode) as tf:
-                tf.extractall(output_p)
+                err = _validate_archive_members(tf.getnames(), output_p)
+                if err:
+                    _cleanup_snapshot(dst_snap)
+                    return {"success": False, "error": err}
+                # Python 3.12+ 用 data_filter 进一步阻止符号链接、设备文件、
+                # 不安全权限等;旧版本回退到我们自己的成员名校验
+                if _TARFILE_HAS_DATA_FILTER:
+                    tf.extractall(output_p, filter="data")
+                else:
+                    tf.extractall(output_p)
         else:
             _cleanup_snapshot(dst_snap)
             supported = ".zip, .tar, .tar.gz, .tgz, .tar.bz2, .rar"
@@ -245,6 +298,9 @@ def create_archive(
             cmd_args = [rar_cmd, "a", "-ep1"]  # -ep1 保留相对路径
             if os.path.exists(archive_path):
                 cmd_args.append("-o+")  # 覆盖现有文件
+            # `--` 让 RAR 停止解析后续参数为开关,避免以 `-` 开头的
+            # 用户路径被当成 switch 注入(WinRAR 5.x+ 支持)。
+            cmd_args.append("--")
             cmd_args.append(archive_path)
 
             # 添加源路径

@@ -172,7 +172,10 @@ class _BatchLogWriter:
 
     def _write_loop(self):
         """后台写入循环"""
-        log_path = None
+        # log_path 按日期缓存,跨午夜后会自动切换到新日期对应的文件,
+        # 避免长时间运行的进程把日志一直追加到启动当天的文件里。
+        log_path: Optional[Path] = None
+        log_date: Optional[datetime.date] = None
         last_flush = 0
 
         while self._running or not self._queue.empty():
@@ -193,8 +196,10 @@ class _BatchLogWriter:
             # 写入批次（过滤掉空字典）
             if batch:
                 try:
-                    if log_path is None:
+                    today = datetime.date.today()
+                    if log_path is None or log_date != today:
                         log_path = get_log_path()
+                        log_date = today
                     with open(log_path, "a", encoding="utf-8") as f:
                         for entry in batch:
                             # 过滤掉空字典或无效条目

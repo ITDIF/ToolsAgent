@@ -3,7 +3,6 @@ import threading
 import time
 import logging
 from typing import Any, Dict, List, Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from ..file.basic import TOOL_REGISTRY, TOOL_SCHEMAS, ToolNames
 from ..security.undo import set_active_session
@@ -142,24 +141,46 @@ class FileAgent:
         effective_args = dict(tool_args)
         if tool_name == "batch_operations" and self.interactive:
             effective_args["interactive"] = True
-        try:
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(TOOL_REGISTRY[tool_name], **effective_args)
-                result = future.result(timeout=timeout)
-            log_action(tool_name, tool_args, result)
-            return result
-        except FuturesTimeoutError:
+
+        # 用 daemon 线程跑工具,join(timeout) 触发后线程仍在后台跑,
+        # 但函数会立刻返回错误。Python 无法强制 kill 线程,daemon 标记
+        # 保证进程退出时残留线程不阻塞退出。
+        # (此前用 ThreadPoolExecutor 的 with 块会在 __exit__ 时
+        #  shutdown(wait=True) 等待 worker 完成,导致 timeout 形同虚设。)
+        result_box: Dict[str, Any] = {}
+
+        def runner() -> None:
+            try:
+                result_box["result"] = TOOL_REGISTRY[tool_name](**effective_args)
+            except BaseException as exc:  # noqa: BLE001 - 捕获后下面分类处理
+                result_box["error"] = exc
+
+        worker = threading.Thread(
+            target=runner,
+            name=f"tool-{tool_name}",
+            daemon=True,
+        )
+        worker.start()
+        worker.join(timeout=timeout)
+
+        if worker.is_alive():
             error_msg = f"工具执行超时（{timeout}秒）: {tool_name}"
             logger.warning(error_msg)
             return {"success": False, "error": error_msg}
-        except TypeError as e:
-            error_msg = f"工具参数错误 [{tool_name}]: {e}"
-            logger.error(error_msg)
+
+        if "error" in result_box:
+            exc = result_box["error"]
+            if isinstance(exc, TypeError):
+                error_msg = f"工具参数错误 [{tool_name}]: {exc}"
+                logger.error(error_msg)
+            else:
+                error_msg = f"工具执行异常 [{tool_name}]: {exc}"
+                logger.exception(error_msg, exc_info=exc)
             return {"success": False, "error": error_msg}
-        except Exception as e:
-            error_msg = f"工具执行异常 [{tool_name}]: {e}"
-            logger.exception(error_msg)
-            return {"success": False, "error": error_msg}
+
+        result = result_box.get("result", {"success": False, "error": "工具未返回结果"})
+        log_action(tool_name, tool_args, result)
+        return result
 
     def _handle_tool_calls(
         self,

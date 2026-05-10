@@ -316,6 +316,7 @@ def write_file(path: str, content: str, append: bool = False) -> Dict[str, Any]:
         except PathSafetyError as e:
             return {"success": False, "error": str(e)}
 
+    snap = None
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         if append:
@@ -816,9 +817,8 @@ def batch_operations(
             print(f"\033[90m  批量{mode_msg} {total_ops} 个操作...\033[0m", flush=True)
 
         for i, op in enumerate(operations):
-            # 显示进度
-            if interactive and total_ops > 1:
-                progress = f"[{i+1}/{total_ops}]"
+            # 显示进度;single-op 时 progress 留空,但仍要保证变量已定义
+            progress = f"[{i+1}/{total_ops}]" if (interactive and total_ops > 1) else ""
 
             if not isinstance(op, dict):
                 error_msg = "operation 必须是对象"

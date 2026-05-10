@@ -34,8 +34,10 @@ def _default_blocked_roots():
             r"C:\Recovery",
             r"C:\$Recycle.Bin",
         ]
+    # 注意: 不要把 "/" 放进黑名单。
+    # 1) `_is_drive_root` 已经拦截裸 "/" 路径;
+    # 2) `_is_under(child, "/")` 对任意绝对路径都成立,放进来会导致全拒。
     return [
-        "/",
         "/etc",
         "/usr",
         "/bin",
@@ -67,7 +69,13 @@ def _is_under(child: Path, parent: Path) -> bool:
         if child_str == parent_str:
             return True
         sep = "\\" if sys.platform == "win32" else "/"
-        return child_str.startswith(parent_str.rstrip(sep) + sep)
+        parent_normalized = parent_str.rstrip(sep)
+        # parent 归一化后为空说明它是 root（POSIX "/" 或 Windows "\\"）。
+        # 对 root 不应再用前缀匹配,否则任意绝对路径都会被判为"在 root 下",
+        # 等同全部拒绝写入。等于 root 本身的情况已在上面处理。
+        if not parent_normalized:
+            return False
+        return child_str.startswith(parent_normalized + sep)
     except Exception:
         return False
 

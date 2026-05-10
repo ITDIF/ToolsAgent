@@ -41,6 +41,18 @@ class TestIsUnder:
     def test_prefix_trap(self):
         assert _is_under(__import__('pathlib').Path("/ab"), __import__('pathlib').Path("/a")) is False
 
+    def test_root_parent_does_not_match_arbitrary_child(self):
+        """回归测试:parent 是 root("/") 时,不应把任意绝对路径都判为"在 root 下"。
+        早先实现 `child.startswith(parent.rstrip(sep) + sep)` 在 parent="/" 时退化成
+        `child.startswith("/")`,会让所有 POSIX 绝对路径都命中,
+        进而导致 Linux 上沙箱黑名单含 "/" 时全部写入被拒。
+        """
+        Path = __import__('pathlib').Path
+        assert _is_under(Path("/home/user/foo"), Path("/")) is False
+        assert _is_under(Path("/etc/passwd"), Path("/")) is False
+        # 但 root 等于自身仍应命中
+        assert _is_under(Path("/"), Path("/")) is True
+
 
 class TestAssertSafeWritePathBlacklist:
     def test_blocks_windows_system_dir(self):
