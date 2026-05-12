@@ -5,6 +5,14 @@ import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any
+# 兼容Windows和Unix的文件锁
+try:
+    import fcntl
+    HAS_FCNTL = True
+except ImportError:
+    # Windows 平台
+    import msvcrt
+    HAS_FCNTL = False
 
 from ..infra.constants import UndoConstants
 
@@ -174,16 +182,54 @@ class UndoManager:
         return {"success": True, "count": len(snapshot), "items": items}
 
     def _backup_file(self, path: str) -> Optional[str]:
-        """备份单个文件到临时目录，返回备份路径"""
+        """备份单个文件到临时目录，返回备份路径，超过最大大小则不备份"""
         path = Path(path)
         if not path.exists():
             return None
+
+        # 计算文件/目录总大小
+        total_size = 0
+        if path.is_file():
+            total_size = path.stat().st_size
+        else:
+            # 递归计算目录大小
+            for f in path.rglob('*'):
+                if f.is_file():
+                    total_size += f.stat().st_size
+                    # 超过限制立刻停止计算
+                    if total_size > UndoConstants.MAX_BACKUP_SIZE:
+                        break
+
+        # 超过最大备份大小则不备份，避免磁盘耗尽
+        if total_size > UndoConstants.MAX_BACKUP_SIZE:
+            logger.warning(f"文件/目录 {path} 大小 {total_size/1024/1024:.2f}MB 超过最大备份限制 {UndoConstants.MAX_BACKUP_SIZE/1024/1024:.2f}MB，跳过备份")
+            return None
+
+        # 执行备份
         backup_dir = Path(tempfile.mkdtemp(prefix="toolsagent_backup_"))
         backup_path = backup_dir / path.name
-        if path.is_file():
-            shutil.copy2(path, backup_path)
-        else:
-            shutil.copytree(path, backup_path)
+        try:
+            if path.is_file():
+                # 备份文件时加共享读锁，确保备份过程中文件不被修改
+                with open(path, 'rb') as f:
+                    # 加共享读锁，阻塞式加锁
+                    if HAS_FCNTL:
+                        # Linux/Unix 平台
+                        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                    else:
+                        # Windows 平台
+                        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 0)
+
+                    # 加锁成功后复制文件
+                    shutil.copy2(path, backup_path)
+            else:
+                # 目录备份无法加全局锁，尽力而为
+                shutil.copytree(path, backup_path)
+        except Exception as e:
+            logger.warning(f"备份 {path} 失败: {str(e)}")
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            return None
+
         return str(backup_path)
 
     def capture_target_state(self, path: str) -> Dict[str, Any]:

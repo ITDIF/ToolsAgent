@@ -29,6 +29,7 @@
 - 撤销最近的操作（支持指定步数）
 - 批量执行多个操作（失败可一次撤销全部）
 - **压缩/解压文件**（支持 zip、tar、tar.gz、tgz、tar.bz2、rar）
+- 🎨 **现代化 TUI 界面**：基于 Ink 的交互式终端用户界面（可选）
 
 ## 支持的模型
 
@@ -73,8 +74,39 @@ XIAOMI_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1
 
 ### 3. 运行
 
+#### 传统 CLI 模式（默认）
+
 ```bash
 python -m src.cli.main
+```
+
+或者安装为命令行工具：
+
+```bash
+pip install -e .
+toolsagent
+```
+
+#### 现代化 TUI 模式（可选）
+
+需要先安装 Node.js 依赖：
+
+```bash
+cd tui
+npm install
+cd ..
+```
+
+然后启动 TUI 界面：
+
+```bash
+python -m src.cli.main --tui
+```
+
+或者：
+
+```bash
+toolsagent --tui
 ```
 
 ## 使用示例
@@ -221,6 +253,14 @@ ToolsAgent/
 │       ├── tui.py             # 终端 UI 组件
 │       ├── console.py         # 控制台输出工具
 │       └── prompts.py         # 用户提示
+├── tui/                       # 现代化 TUI 界面（基于 Node.js/Ink）
+│   ├── src/
+│   │   ├── main.tsx           # TUI 入口
+│   │   └── theme/
+│   │       └── theme.ts       # 主题定义
+│   ├── package.json           # Node.js 依赖
+│   ├── tsconfig.json          # TypeScript 配置
+│   └── README.md              # TUI 文档
 ├── tests/                     # 单元测试
 ├── requirements.txt           # 依赖
 ├── .env                       # 环境变量

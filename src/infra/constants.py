@@ -25,6 +25,7 @@ class UndoConstants:
     MAX_UNDO = 50
     BACKUP_MAX_AGE_HOURS = 24
     SECONDS_PER_HOUR = 3600
+    MAX_BACKUP_SIZE = 100 * 1024 * 1024  # 最大备份大小100MB，避免磁盘耗尽
 
 
 class FileConstants:

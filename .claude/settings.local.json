@@ -4,7 +4,10 @@
       "mcp__ide__getDiagnostics",
       "Bash(pip install *)",
       "Bash(python *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(TUI_BACKEND_PORT=12345 npm run *)"
     ]
   }
 }

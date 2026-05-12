@@ -6,10 +6,17 @@ import logging
 from pathlib import Path
 from dotenv import load_dotenv
 
-# 在 Windows 上设置标准输出为 UTF-8 以正确显示中文
+# 在 Windows 上设置标准输出为 UTF-8 以正确显示中文（仅在TTY环境下）
 if sys.platform == 'win32':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    try:
+        # 只有在stdout是TTY并且有buffer的情况下才替换
+        if sys.stdout.isatty() and hasattr(sys.stdout, 'buffer'):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        if sys.stderr.isatty() and hasattr(sys.stderr, 'buffer'):
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except:
+        # 编码设置失败时忽略，不影响主功能
+        pass
 
 from src.core.llm import (
     BaseLLMProvider, OpenAICompatibleProvider,
@@ -24,9 +31,7 @@ from src.infra.config import get_config
 from src.infra.logging_config import configure_logging
 from src.security.undo import cleanup_old_backups, undo_last, set_active_session, get_undo_history
 
-
 from src.ui.console import Color
-
 
 # 模型 Provider 注册表(主键即菜单顺序)
 MODEL_PROVIDERS = {
@@ -265,14 +270,22 @@ def _print_help():
 
 
 def main():
+    import argparse
+    from pathlib import Path
+    parser = argparse.ArgumentParser(description="本地文件操作助手")
+    parser.add_argument("--tui", action="store_true", help="启动现代化终端界面")
+    args = parser.parse_args()
+
     load_dotenv()
 
     # 配置日志
     log_dir = Path.home() / ".toolsagent" / "logs"
-    configure_logging(level=logging.INFO, log_dir=log_dir)
-
-    print(f"{Color.BOLD}本地文件操作助手{Color.RESET}  {Color.GRAY}—  输入 /help 查看命令{Color.RESET}")
-    print()
+    log_level = logging.INFO
+    # TUI模式下禁用stdout日志输出，避免污染界面
+    if args.tui:
+        configure_logging(level=logging.WARNING, log_dir=log_dir, log_to_console=False)
+    else:
+        configure_logging(level=log_level, log_dir=log_dir)
 
     # 检查是否有默认模型配置
     config = get_config()
@@ -292,15 +305,276 @@ def main():
         provider = select_model()
         if not provider:
             return
-    else:
-        print(f"{Color.GRAY}已加载默认模型: {default_model}{Color.RESET}")
 
     # 默认新建会话
     session_id = generate_session_id()
-    agent = FileAgent(provider, session_id=session_id, interactive=True)
+    # TUI模式下禁用Agent的交互式输出，改为通过消息机制通知
+    agent = FileAgent(provider, session_id=session_id, interactive=not args.tui)
 
-    print(f"{Color.GRAY}新会话 {session_id}{Color.RESET}")
-    _print_help()
+    # 非TUI模式下才打印欢迎信息和帮助
+    if not args.tui:
+        print(
+            f"{Color.BOLD}本地文件操作助手{Color.RESET}  {Color.GRAY}—  输入 /help 查看命令，或使用 --tui 参数启动现代化界面{Color.RESET}")
+        print()
+        if provider:
+            print(f"{Color.GRAY}已加载默认模型: {default_model}{Color.RESET}")
+        print(f"{Color.GRAY}新会话 {session_id}{Color.RESET}")
+        _print_help()
+
+    # TUI 相关全局变量
+    client_socket = None
+    send_message_to_tui = None
+    MSG_START = b"<<<MSG_START>>>"  # 字节形式用于解析
+    MSG_END = b"<<<MSG_END>>>"
+    MSG_START_STR = MSG_START.decode('utf-8')
+    MSG_END_STR = MSG_END.decode('utf-8')
+
+    # 如果指定了 --tui 参数，启动 TUI 界面
+    if args.tui:
+        import sys
+        import json
+        import uuid
+        import socket
+        import threading
+        from src.tui.app import TUIApp
+
+        try:
+            # 启动本地 Socket 服务
+            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server_socket.bind(('127.0.0.1', 0))  # 绑定随机端口
+            server_socket.listen(1)
+            server_socket.settimeout(None)
+            port = server_socket.getsockname()[1]
+
+            is_running = True
+
+            def _send_message_to_tui(msg_type: str, payload: dict):
+                """发送消息给 TUI 界面"""
+                if not client_socket:
+                    import logging
+                    logging.warning("无法发送消息：client_socket为空")
+                    return
+                message = {
+                    "type": msg_type,
+                    "id": str(uuid.uuid4()),
+                    "timestamp": int(time.time() * 1000),
+                    **payload
+                }
+                msg_str = f"{MSG_START_STR}\n{json.dumps(message, ensure_ascii=False)}\n{MSG_END_STR}\n"
+                try:
+                    client_socket.sendall(msg_str.encode('utf-8'))
+                except Exception as e:
+                    import logging
+                    logging.error(f"发送消息给TUI失败: {str(e)}")
+
+            send_message_to_tui = _send_message_to_tui
+
+            def process_user_input(content: str):
+                """在独立线程中处理用户输入"""
+                try:
+                    import logging
+
+                    # 不需要确认消息，直接开始思考动画
+
+                    # 调用 Agent 处理
+                    before = time.time()
+                    before_usage = agent.get_token_usage()
+                    try:
+                        logging.info("开始调用agent.process")
+                        response = agent.process(content)
+                        logging.info(f"agent处理完成，响应长度: {len(response)}")
+
+                        elapsed = time.time() - before
+                        after_usage = agent.get_token_usage()
+
+                        # 发送助手回复
+                        send_message_to_tui("assistant_msg", {
+                            "content": response,
+                            "elapsed": elapsed,
+                            "token_usage": {
+                                "input": after_usage["input"] - before_usage["input"],
+                                "output": after_usage["output"] - before_usage["output"],
+                                "total": after_usage["total"] - before_usage["total"]
+                            }
+                        })
+                    except Exception as e:
+                        import traceback
+                        error_detail = traceback.format_exc()
+                        # 把错误详情写入日志
+                        logging.error(f"处理消息失败: {str(e)}\n{error_detail}")
+                        # 发送简化的错误信息给TUI
+                        send_message_to_tui("error", {
+                            "content": f"处理失败: {str(e)}"
+                        })
+
+                    # 自动保存会话
+                    save_session(session_id, agent.messages)
+                    logging.info("会话已保存")
+                except Exception as e:
+                    import traceback
+                    error_detail = traceback.format_exc()
+                    import logging
+                    logging.error(f"消息处理循环异常: {str(e)}\n{error_detail}")
+                    try:
+                        send_message_to_tui("error", {
+                            "content": f"系统错误: {str(e)}"
+                        })
+                    except:
+                        pass
+
+            def handle_tui_message(message: dict):
+                """处理来自 TUI 的消息"""
+                try:
+                    import logging
+                    logging.info(f"收到TUI消息: {message}")
+
+
+                    msg_type = message.get("type")
+                    if msg_type == "user_input":
+                        content = message.get("content", "")
+                        logging.info(f"用户输入: {content}")
+
+                        # 处理TUI命令
+                        if content.startswith("/"):
+                            if content.lower() in ["/exit", "/quit", "/q"]:
+                                send_message_to_tui("system_notify", {
+                                    "content": "正在退出...",
+                                    "level": "info"
+                                })
+                                global is_running
+                                is_running = False
+                                return
+                            elif content.lower() in ["/help", "/h"]:
+                                help_text = """可用命令:
+/help, /h    显示帮助信息
+/model, /m   切换模型
+/exit, /q    退出程序
+"""
+                                send_message_to_tui("assistant_msg", {
+                                    "content": help_text
+                                })
+                                return
+                            elif content.lower() in ["/model", "/m"]:
+                                # 切换模型
+                                send_message_to_tui("system_notify", {
+                                    "content": "请在终端中选择模型...",
+                                    "level": "info"
+                                })
+                                # 因为select_model函数会直接打印到终端
+                                new_provider = select_model()
+                                if new_provider:
+                                    agent.llm = new_provider
+                                    # 提取模型名（兼容不同provider的格式）
+                                    model_name = getattr(new_provider, 'model', str(new_provider))
+                                    send_message_to_tui("model_update", {
+                                        "model": model_name
+                                    })
+                                    send_message_to_tui("assistant_msg", {
+                                        "content": f"✅ 模型已切换为: {model_name}"
+                                    })
+                                return
+
+                        # 异步处理用户输入，避免阻塞socket线程
+                        import threading
+                        threading.Thread(target=process_user_input, args=(content,), daemon=True).start()
+                except Exception as e:
+                    import traceback
+                    error_detail = traceback.format_exc()
+                    import logging
+                    logging.error(f"消息处理循环异常: {str(e)}\n{error_detail}")
+                    try:
+                        send_message_to_tui("error", {
+                            "content": f"系统错误: {str(e)}"
+                        })
+                    except:
+                        pass
+
+            def socket_server_thread():
+                """Socket服务线程，处理与TUI的通信"""
+                nonlocal client_socket
+                try:
+                    client_socket, addr = server_socket.accept()
+                    client_socket.settimeout(None)
+
+                    # 连接成功后，发送当前模型信息给前端
+                    send_message_to_tui("model_update", {
+                        "model": default_model
+                    })
+
+                    buffer = b""
+
+                    while is_running:
+                        try:
+                            data = client_socket.recv(4096)  # 增大缓冲区
+                            if not data:
+                                break
+
+                            buffer += data
+
+                            # 在字节层面搜索消息边界，避免字节/字符索引不匹配问题
+                            while True:
+                                # 查找消息开始标记
+                                start_pos = buffer.find(MSG_START)
+                                if start_pos == -1:
+                                    break  # 没有完整消息，继续接收
+
+                                # 查找消息结束标记（从开始标记后面找）
+                                end_pos = buffer.find(MSG_END, start_pos + len(MSG_START))
+                                if end_pos == -1:
+                                    break  # 消息不完整，继续接收
+
+                                # 提取消息内容（去掉开始和结束标记）
+                                msg_bytes = buffer[start_pos + len(MSG_START) : end_pos]
+
+                                # 移除已处理的部分（包括结束标记）
+                                buffer = buffer[end_pos + len(MSG_END) :]
+
+                                # 解码并解析JSON
+                                try:
+                                    msg_str = msg_bytes.decode('utf-8')
+                                    message = json.loads(msg_str)
+                                    handle_tui_message(message)
+                                except (UnicodeDecodeError, json.JSONDecodeError):
+                                    import logging
+                                    logging.error(f"解析 TUI 消息失败")
+                                    continue
+                        except Exception as e:
+                            import traceback
+                            error_detail = traceback.format_exc()
+                            import logging
+                            logging.error(f"Socket接收/处理消息异常: {str(e)}\n{error_detail}")
+                            break
+
+                except Exception as e:
+                    import traceback
+                    error_detail = traceback.format_exc()
+                    import logging
+                    logging.error(f"Socket 服务错误: {str(e)}\n{error_detail}")
+                finally:
+                    if client_socket:
+                        try:
+                            client_socket.close()
+                        except:
+                            pass
+                    try:
+                        server_socket.close()
+                    except:
+                        pass
+
+            # 启动Socket服务线程
+            threading.Thread(target=socket_server_thread, daemon=True).start()
+
+            # 直接启动 Python TUI 应用（在主线程中运行）
+            tui_app = TUIApp(port)
+            tui_app.run()
+
+            is_running = False
+            print(f"\n{Color.GRAY}会话已保存，再见!{Color.RESET}")
+            shutdown_log_writer()
+
+        except Exception as e:
+            print(f"{Color.RED}TUI 运行错误: {str(e)}{Color.RESET}")
+        return
 
     while True:
         try:
@@ -339,6 +613,13 @@ def main():
                     new_provider = select_model()
                     if new_provider:
                         agent.llm = new_provider
+                        # 如果是TUI模式，同步更新前端显示的模型名
+                        if args.tui and send_message_to_tui and client_socket:
+                            # 提取模型名（兼容不同provider的格式）
+                            model_name = getattr(new_provider, 'model', str(new_provider))
+                            send_message_to_tui("model_update", {
+                                "model": model_name
+                            })
                         print(f"{Color.GREEN}模型已切换{Color.RESET}")
                     continue
                 elif cmd in ["help", "h"]:
@@ -361,7 +642,8 @@ def main():
                                 if isinstance(msg, dict):
                                     print(f"{Color.GREEN}✓{Color.RESET} {msg['label']}")
                                     for sr in msg.get("sub_results", []):
-                                        mark = f"{Color.GREEN}✓{Color.RESET}" if sr["success"] else f"{Color.RED}✗{Color.RESET}"
+                                        mark = f"{Color.GREEN}✓{Color.RESET}" if sr[
+                                            "success"] else f"{Color.RED}✗{Color.RESET}"
                                         print(f"  {mark} {sr.get('message') or sr.get('error')}")
                                 else:
                                     print(f"{Color.GREEN}✓{Color.RESET} {msg}")
