@@ -15,6 +15,7 @@ export function ToolMessage({ message }: { message: Message }) {
   }
 
   const config = statusConfig[message.toolStatus || 'running'] || statusConfig.running
+  const hasDetails = message.toolParameters || message.toolResult || message.toolError
 
   return (
     <Box flexDirection="column" marginLeft={2}>
@@ -24,17 +25,20 @@ export function ToolMessage({ message }: { message: Message }) {
         {message.toolDescription && (
           <Text color={theme.subtle}> {message.toolDescription}</Text>
         )}
+        {hasDetails && (
+          <Text color={theme.subtle}> {expanded ? '▼' : '▶'}</Text>
+        )}
       </Box>
 
-      {expanded && message.toolParameters && (
+      {expanded && message.toolParameters && Object.keys(message.toolParameters).length > 0 && (
         <Box marginLeft={2} flexDirection="column">
-          <Text color={theme.subtle}>参数: {JSON.stringify(message.toolParameters, null, 2)}</Text>
+          <Text color={theme.subtle}>参数: {JSON.stringify(message.toolParameters)}</Text>
         </Box>
       )}
 
       {expanded && message.toolResult && (
         <Box marginLeft={2} flexDirection="column">
-          <Text color={theme.subtle}>结果: {JSON.stringify(message.toolResult, null, 2)}</Text>
+          <Text color={theme.subtle}>结果: {JSON.stringify(message.toolResult)}</Text>
         </Box>
       )}
 

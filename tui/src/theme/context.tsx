@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from 'react'
+import React, { createContext, useContext, useState, useMemo } from 'react'
 import { type Theme, type ThemeName, THEME_NAMES, getTheme } from './theme.js'
 
 interface ThemeContextValue {
@@ -23,14 +23,14 @@ export function ThemeProvider({
   const [themeName, setThemeName] = useState<ThemeName>(initialTheme)
   const theme = getTheme(themeName)
 
-  const value = useCallback(() => ({
+  const value = useMemo(() => ({
     theme,
     themeName,
     setThemeName,
   }), [theme, themeName])
 
   return (
-    <ThemeContext.Provider value={value()}>
+    <ThemeContext.Provider value={value}>
       {children}
     </ThemeContext.Provider>
   )

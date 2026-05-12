@@ -282,13 +282,16 @@ def _run_tui(provider, default_model, session_id):
 
     # 构造工具状态回调
     def _build_tool_status_sender(tui_bridge):
-        _active_tools = {}
+        _active_tools = {}  # key -> msg_id
+        _tool_counter = {}  # tool_name -> 计数器，避免同名工具并发冲突
 
         def sender(status, tool_name, args_or_result, description):
             import time as _t
             if status == "running":
-                msg_id = f"{tool_name}_{int(_t.time() * 1000)}"
-                _active_tools[tool_name] = msg_id
+                _tool_counter[tool_name] = _tool_counter.get(tool_name, 0) + 1
+                seq = _tool_counter[tool_name]
+                msg_id = f"{tool_name}_{int(_t.time() * 1000)}_{seq}"
+                _active_tools[f"{tool_name}_{seq}"] = msg_id
                 tui_bridge.send("tool_status", {
                     "id": msg_id,
                     "toolName": tool_name,
@@ -297,7 +300,13 @@ def _run_tui(provider, default_model, session_id):
                     "parameters": args_or_result if isinstance(args_or_result, dict) else None,
                 })
             else:
-                msg_id = _active_tools.pop(tool_name, f"{tool_name}_unknown")
+                # 找到该工具最近的一个 active key
+                matching_keys = [k for k in _active_tools if k.startswith(f"{tool_name}_")]
+                if matching_keys:
+                    key = matching_keys[-1]
+                    msg_id = _active_tools.pop(key)
+                else:
+                    msg_id = f"{tool_name}_unknown"
                 tui_bridge.send("tool_status", {
                     "id": msg_id,
                     "toolName": tool_name,
@@ -381,6 +390,11 @@ def _run_tui(provider, default_model, session_id):
                             pass
                 if cmd_name in ("exit", "quit", "q"):
                     tui_bridge.send("system_notify", {"content": "正在退出...", "level": "info"})
+                    return
+                # /model <name> 快捷切换
+                if cmd_name in ("model", "m") and len(parts) > 1:
+                    from src.ui.tui_commands import handle_model_switch_direct
+                    handle_model_switch_direct(tui_bridge, file_agent, parts[1].strip())
                     return
                 dispatch_command(tui_bridge, file_agent, sid, cmd_name, cmd_args)
                 return

@@ -54,19 +54,44 @@ def handle_model_switch(bridge: 'TuiBridge', agent: 'FileAgent') -> None:
     key = keys[choice]
     info = MODEL_PROVIDERS[key]
 
-    # 需要接入点的模型
+    # 需要接入点的模型（如豆包）
     if info["needs_endpoint"]:
-        endpoint = bridge.request_confirmation(
+        endpoint_choice = bridge.request_confirmation(
             f"请输入{info['name']}接入点 ID:",
             ["使用默认接入点", "取消"],
             default=0,
         )
-        if choice is None or choice != 0:
+        if endpoint_choice is None or endpoint_choice != 0:
             bridge.send("system_notify", {"content": "已取消模型切换", "level": "info"})
             return
         model_name = ""
     else:
-        model_name = info.get("default_model", "")
+        # 让用户选择使用默认模型还是输入自定义模型名
+        default_model = info.get("default_model", "")
+        if default_model:
+            model_choice = bridge.request_confirmation(
+                f"模型设置 (默认: {default_model}):",
+                [f"使用默认 ({default_model})", "输入自定义模型名", "取消"],
+                default=0,
+            )
+            if model_choice is None or model_choice == 2:
+                bridge.send("system_notify", {"content": "已取消模型切换", "level": "info"})
+                return
+            elif model_choice == 0:
+                model_name = default_model
+            else:
+                # 自定义模型名：提示用户在聊天框输入
+                bridge.send("system_notify", {
+                    "content": f"请在输入框中输入模型名称，格式: /model <模型名>",
+                    "level": "info",
+                })
+                return
+        else:
+            bridge.send("system_notify", {
+                "content": f"请在输入框中输入模型名称，格式: /model <模型名>",
+                "level": "info",
+            })
+            return
 
     api_key = os.getenv(info["env_key"])
     if not api_key:
@@ -91,7 +116,37 @@ def handle_model_switch(bridge: 'TuiBridge', agent: 'FileAgent') -> None:
         bridge.send("error", {"content": f"创建 Provider 失败: {e}"})
 
 
-def handle_undo(bridge: 'TuiBridge', agent: 'FileAgent', count: int = 1) -> None:
+def handle_model_switch_direct(bridge: 'TuiBridge', agent: 'FileAgent', model_name: str) -> None:
+    """通过 /model <name> 直接切换模型"""
+    from ..cli.main import MODEL_PROVIDERS, _build_provider, _match_provider_key
+
+    key = _match_provider_key(model_name)
+    if not key:
+        bridge.send("error", {"content": f"未知的模型: {model_name}"})
+        return
+
+    info = MODEL_PROVIDERS[key]
+    api_key = os.getenv(info["env_key"])
+    if not api_key:
+        bridge.send("error", {"content": f"未设置环境变量: {info['env_key']}"})
+        return
+
+    kwargs: dict = {"api_key": api_key, "model": model_name}
+    if info.get("base_url_env"):
+        kwargs["base_url"] = os.getenv(info["base_url_env"], info.get("base_url_default"))
+
+    try:
+        new_provider = info["class"](**kwargs)
+        agent.llm = new_provider
+        resolved_name = getattr(new_provider, 'model', model_name)
+        bridge.send("model_update", {"model": resolved_name})
+        bridge.send("assistant_msg", {
+            "content": f"模型已切换为: {resolved_name}",
+            "elapsed": 0,
+            "tokenUsage": {"input": 0, "output": 0, "total": 0},
+        })
+    except Exception as e:
+        bridge.send("error", {"content": f"创建 Provider 失败: {e}"})
     """撤销操作"""
     set_active_session(agent.session_id)
     result = undo_last(count=count)

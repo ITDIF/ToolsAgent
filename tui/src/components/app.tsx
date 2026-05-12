@@ -23,7 +23,7 @@ export function App({
     <ThemeProvider initialTheme={initialTheme}>
       <UiStoreProvider>
         <MessageStoreProvider>
-          <EventSubscriber bus={bus} client={client}>
+          <EventSubscriber bus={bus}>
             <REPL client={client} />
           </EventSubscriber>
         </MessageStoreProvider>

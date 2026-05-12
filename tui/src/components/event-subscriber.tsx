@@ -1,6 +1,5 @@
 import React, { useEffect } from 'react'
 import { TypedEventBus } from '../bridge/event-bus.js'
-import { TuiClient } from '../bridge/tui-client.js'
 import { useUiDispatch } from '../store/ui-store.js'
 import { useMessageDispatch } from '../store/message-store.js'
 
@@ -10,11 +9,9 @@ import { useMessageDispatch } from '../store/message-store.js'
  */
 export function EventSubscriber({
   bus,
-  client,
   children,
 }: {
   bus: TypedEventBus
-  client: TuiClient
   children: React.ReactNode
 }) {
   const dispatchUi = useUiDispatch()
@@ -99,7 +96,7 @@ export function EventSubscriber({
     }))
 
     return () => unsubs.forEach(unsub => unsub())
-  }, [bus, client, dispatchUi, dispatchMsg])
+  }, [bus, dispatchUi, dispatchMsg])
 
   return <>{children}</>
 }

@@ -56,12 +56,17 @@ class TuiBridge:
         self._is_running = True
         return self._port
 
-    def wait_for_connection(self) -> None:
-        """阻塞等待前端连接"""
+    def wait_for_connection(self, timeout: float = 30.0) -> None:
+        """阻塞等待前端连接，超时抛出 TimeoutError"""
         if not self._server_socket:
             raise RuntimeError("服务未启动")
-        self._client_socket, _ = self._server_socket.accept()
+        self._server_socket.settimeout(timeout)
+        try:
+            self._client_socket, _ = self._server_socket.accept()
+        except socket.timeout:
+            raise TimeoutError(f"等待 TUI 前端连接超时（{timeout}s）")
         self._client_socket.settimeout(None)
+        self._server_socket.settimeout(None)
         # 启动接收线程
         self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
         self._recv_thread.start()

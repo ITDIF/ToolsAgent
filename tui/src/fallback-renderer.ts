@@ -110,6 +110,25 @@ export class FallbackRenderer {
       }
     })
 
+    this.bus.on('undo_result', (payload) => {
+      if (payload.success) {
+        for (const r of payload.results || []) {
+          if (r.success) {
+            const msg = typeof r.message === 'string' ? r.message : (r.message as any)?.label || '完成'
+            console.log(chalk.green('  ✓ ') + msg)
+          } else {
+            console.log(chalk.red('  ✗ ') + (r.error || '失败'))
+          }
+        }
+      } else {
+        console.log(chalk.red('✗ 撤销失败: ') + (payload.error || '未知错误'))
+      }
+    })
+
+    this.bus.on('session_info', (payload) => {
+      console.log(chalk.blue(`📋 会话: ${payload.sessionId} (${payload.messageCount} 条消息)`))
+    })
+
     // 用户输入
     this.rl.on('line', (line) => {
       if (this.waitingConfirmation) return // 确认模式下忽略

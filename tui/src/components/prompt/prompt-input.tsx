@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react'
+import React, { useState } from 'react'
 import { Box, Text, useInput } from 'ink'
 import { TuiClient } from '../../bridge/tui-client.js'
 import { useMessageDispatch } from '../../store/message-store.js'
@@ -9,7 +9,7 @@ export function PromptInput({ client }: { client: TuiClient }) {
   const [input, setInput] = useState('')
   const [history, setHistory] = useState<string[]>([])
   const [historyIdx, setHistoryIdx] = useState(-1)
-  const { isThinking, pendingConfirmation, model } = useUiState()
+  const { isThinking, pendingConfirmation } = useUiState()
   const dispatchMsg = useMessageDispatch()
   const { theme } = useTheme()
 
@@ -30,9 +30,9 @@ export function PromptInput({ client }: { client: TuiClient }) {
 
       // 发送给后端
       if (content.startsWith('/')) {
-        const parts = content.slice(1).split(maxsplit)
-        const name = parts[0]?.toLowerCase() || ''
-        const rest = parts[1] || ''
+        const spaceIdx = content.indexOf(' ')
+        const name = (spaceIdx === -1 ? content.slice(1) : content.slice(1, spaceIdx)).toLowerCase()
+        const rest = spaceIdx === -1 ? '' : content.slice(spaceIdx + 1)
         if ((name === 'undo' || name === 'u') && rest) {
           client.sendCommand(name, { count: parseInt(rest) || 1 })
         } else {
