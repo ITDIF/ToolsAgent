@@ -30,8 +30,8 @@ python -m src.cli.main
 
 // 环境提示
 if (!isTTY || !supportsRawMode) {
-  console.log('[33m⚠️  检测到非标准终端环境，使用纯文本兼容模式运行[0m')
-  console.log('[90m💡 如需更好的交互体验，请使用系统终端（Windows Terminal/PowerShell）运行[0m')
+  console.log('⚠️  检测到非标准终端环境，使用纯文本兼容模式运行')
+  console.log('💡 如需更好的交互体验，请使用系统终端（Windows Terminal/PowerShell）运行')
   console.log()
 }
 
@@ -39,10 +39,34 @@ if (!isTTY || !supportsRawMode) {
 const MSG_START = '<<<MSG_START>>>'
 const MSG_END = '<<<MSG_END>>>'
 
-// 获取后端端口
-const port = process.env.TUI_BACKEND_PORT ? parseInt(process.env.TUI_BACKEND_PORT) : 0
+// 获取后端端口（支持环境变量或命令行参数）
+const port = process.env.TUI_BACKEND_PORT
+  ? parseInt(process.env.TUI_BACKEND_PORT)
+  : parseInt(process.argv[2] || '0')
+
 if (!port) {
-  console.error('❌ 错误：未找到后端端口配置')
+  console.error(`
+⚠️  TUI 前端界面
+----------------------
+此程序是 ToolsAgent 的前端界面，需要后端服务支持。
+
+使用方式：
+1. 通过 Python 启动（推荐）：
+   python -m src.cli.main --tui
+
+2. 手动启动（仅用于开发）：
+   # 终端1：启动后端
+   TUI_BACKEND_PORT=9999 python -m src.cli.main --tui
+
+   # 终端2：启动前端
+   npm run dev 9999
+
+3. 构建后运行：
+   npm run build
+   TUI_BACKEND_PORT=9999 npm start 9999
+
+注意：直接运行此程序不会启动任何服务，它只是一个客户端。
+`)
   process.exit(1)
 }
 
@@ -113,7 +137,7 @@ function handleMessage(message: any) {
 }
 
 // 连接后端
-console.log('🔌 正在连接后端服务...')
+console.log(`🔌 正在连接后端服务 (端口 ${port})...`)
 socket = net.connect({ host: '127.0.0.1', port }, () => {
   isConnected = true
   console.log('✅ 已连接到后端服务')
@@ -157,6 +181,7 @@ socket = net.connect({ host: '127.0.0.1', port }, () => {
 
 socket.on('error', (err) => {
   console.error(`❌ 连接后端失败: ${err.message}`)
+  console.error(`请确保后端服务正在运行，端口 ${port} 可访问`)
   process.exit(1)
 })
 

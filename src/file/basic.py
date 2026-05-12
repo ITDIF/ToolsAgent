@@ -3,7 +3,7 @@ import sys
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Union, Optional, Callable
+from typing import Any, Dict, List, Union, Optional, Callable, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from threading import Event, local
@@ -11,6 +11,7 @@ from threading import Event, local
 from ..security.sandbox import assert_safe_write_path, PathSafetyError
 from ..infra.config import get_config
 from ..infra.constants import ConfigDefaults, FileConstants
+from ..infra.errors import ParameterError, error_response, ErrorCode
 from ..security.undo import (
     UndoActionType,
     push_undo,
@@ -758,7 +759,8 @@ def batch_operations(
     stop_on_error: bool = True,
     label: Optional[str] = None,
     interactive: bool = False,
-    dry_run: bool = False
+    dry_run: bool = False,
+    atomic: bool = True
 ) -> Dict[str, Any]:
     """批量执行多个文件操作,作为一个整体进入撤销栈。
 
@@ -768,6 +770,7 @@ def batch_operations(
         label: 撤销历史中显示的标签
         interactive: 是否显示进度信息（用于交互式模式）
         dry_run: 是否为预览模式，只验证不执行实际操作
+        atomic: 是否启用原子性，失败时自动回滚已执行的操作（默认True）
 
     Returns:
         每一步的结果,以及整体成功/失败标志。
@@ -807,6 +810,7 @@ def batch_operations(
     results = []
     failures = 0
     halted_index = None
+    rollback_result = None
 
     try:
         total_ops = len(operations)
@@ -889,7 +893,12 @@ def batch_operations(
 
             # 正常执行模式
             try:
-                step_result = TOOL_REGISTRY[tool_name](**tool_args)
+                # 先校验参数
+                valid, error = validate_tool_parameters(tool_name, tool_args)
+                if not valid:
+                    step_result = {"success": False, "error": error["error"], "details": error}
+                else:
+                    step_result = TOOL_REGISTRY[tool_name](**tool_args)
             except TypeError as e:
                 step_result = {"success": False, "error": f"参数错误: {e}"}
             except Exception as e:
@@ -921,6 +930,40 @@ def batch_operations(
         _clear_batch_context()
         _set_paths_validated(False)  # 重置校验状态
 
+    # 原子性回滚：如果启用了原子性、stop_on_error且有失败，自动回滚所有已执行的操作
+    rollback_success = True
+    rollback_errors = []
+    if atomic and stop_on_error and failures > 0 and not dry_run and sub_actions:
+        if interactive:
+            print(f"\033[93m  检测到执行失败，正在回滚 {len(sub_actions)} 个已执行的操作...\033[0m", flush=True)
+
+        # 从undo模块导入内部函数，避免循环导入
+        from src.security.undo import _apply_undo_action
+
+        # 按相反顺序回滚（撤销操作需要反向执行）
+        for action in reversed(sub_actions):
+            try:
+                ok, msg = _apply_undo_action(action)
+                if not ok:
+                    rollback_success = False
+                    rollback_errors.append(f"回滚失败: {msg}")
+                    if interactive:
+                        print(f"    ❌ 回滚 {action.get('type', '未知操作')} 失败: {msg}")
+                else:
+                    if interactive:
+                        print(f"    ✅ 已回滚 {action.get('type', '未知操作')}")
+            except Exception as e:
+                rollback_success = False
+                rollback_errors.append(f"回滚异常: {str(e)}")
+                if interactive:
+                    print(f"    ❌ 回滚异常: {str(e)}")
+
+        if interactive:
+            if rollback_success:
+                print(f"\033[92m  所有已执行操作已成功回滚，文件状态已恢复到批量操作前\033[0m", flush=True)
+            else:
+                print(f"\033[91m  部分操作回滚失败，文件状态可能不一致\033[0m", flush=True)
+
     # 显示最终结果
     if interactive and total_ops > 1:
         if dry_run:
@@ -928,7 +971,13 @@ def batch_operations(
         elif failures == 0:
             print(f"\033[90m  全部完成 ({total_ops} 个操作) ✓\033[0m")
         else:
-            print(f"\033[90m  完成 {total_ops - failures}/{total_ops} 个操作, {failures} 个失败\033[0m")
+            if atomic and stop_on_error:
+                if rollback_success:
+                    print(f"\033[90m  批量操作失败，已自动回滚所有修改\033[0m")
+                else:
+                    print(f"\033[90m  批量操作失败，部分回滚失败，请手动检查文件状态\033[0m")
+            else:
+                print(f"\033[90m  完成 {total_ops - failures}/{total_ops} 个操作, {failures} 个失败\033[0m")
 
     # 预览模式直接返回，不入撤销栈
     if dry_run:
@@ -941,8 +990,8 @@ def batch_operations(
             "message": f"预览模式：共 {len(results)} 个操作，{failures} 个可能失败"
         }
 
-    # 仅当至少有一步成功且产生了 sub_action 时才入栈
-    if sub_actions:
+    # 仅当没有失败，或原子性关闭时，才将批量操作入撤销栈
+    if sub_actions and (failures == 0 or not atomic):
         push_undo({
             "type": UndoActionType.BATCH,
             "label": label or f"批量操作({len(sub_actions)} 步)",
@@ -952,6 +1001,9 @@ def batch_operations(
     return {
         "success": failures == 0,
         "dry_run": False,
+        "atomic": atomic,
+        "rollback_success": rollback_success if (atomic and stop_on_error and failures > 0) else None,
+        "rollback_errors": rollback_errors if (atomic and stop_on_error and failures > 0) else None,
         "total": len(operations),
         "executed": len(results),
         "failures": failures,
@@ -1040,6 +1092,10 @@ TOOL_SCHEMAS = [
                 "dry_run": {
                     "type": "boolean",
                     "description": "是否为预览模式，只验证不执行实际操作(默认 false)"
+                },
+                "atomic": {
+                    "type": "boolean",
+                    "description": "是否启用原子性，失败时自动回滚已执行的操作(默认 true)"
                 }
             },
             "required": ["operations"]
@@ -1207,3 +1263,114 @@ TOOL_SCHEMAS = [
         }
     }
 ]
+
+# 工具Schema映射表，通过工具名快速查找Schema
+TOOL_SCHEMA_MAP: Dict[str, Dict[str, Any]] = {schema["name"]: schema for schema in TOOL_SCHEMAS}
+
+
+def validate_tool_parameters(tool_name: str, parameters: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """
+    校验工具参数是否符合Schema定义
+    Args:
+        tool_name: 工具名称
+        parameters: 工具参数
+    Returns:
+        (校验是否通过, 错误信息或None)
+    """
+    if tool_name not in TOOL_SCHEMA_MAP:
+        return False, {
+            "error": f"未知工具: {tool_name}",
+            "code": ErrorCode.INVALID_PARAMETER.value
+        }
+
+    schema = TOOL_SCHEMA_MAP[tool_name]["input_schema"]
+    required_fields = schema.get("required", [])
+    properties = schema.get("properties", {})
+
+    # 校验必填字段
+    for field in required_fields:
+        if field not in parameters:
+            return False, {
+                "error": f"缺少必填参数: {field}",
+                "field": field,
+                "code": ErrorCode.INVALID_PARAMETER.value
+            }
+
+    # 校验字段类型和约束
+    for field, value in parameters.items():
+        if field not in properties:
+            continue  # 允许额外参数，不校验
+
+        field_schema = properties[field]
+        expected_type = field_schema.get("type")
+
+        # 类型校验
+        if expected_type:
+            type_matched = False
+            if expected_type == "string" and isinstance(value, str):
+                type_matched = True
+            elif expected_type == "integer" and isinstance(value, int):
+                type_matched = True
+            elif expected_type == "boolean" and isinstance(value, bool):
+                type_matched = True
+            elif expected_type == "array" and isinstance(value, list):
+                type_matched = True
+            elif expected_type == "object" and isinstance(value, dict):
+                type_matched = True
+            # 处理oneOf的情况
+            elif "oneOf" in field_schema:
+                for option in field_schema["oneOf"]:
+                    option_type = option.get("type")
+                    if option_type == "string" and isinstance(value, str):
+                        type_matched = True
+                        break
+                    elif option_type == "array" and isinstance(value, list):
+                        type_matched = True
+                        break
+
+            if not type_matched:
+                return False, {
+                    "error": f"参数 {field} 类型错误，期望 {expected_type}，实际 {type(value).__name__}",
+                    "field": field,
+                    "expected_type": expected_type,
+                    "actual_type": type(value).__name__,
+                    "code": ErrorCode.INVALID_PARAMETER.value
+                }
+
+        # 枚举值校验
+        if "enum" in field_schema:
+            allowed_values = field_schema["enum"]
+            if value not in allowed_values:
+                return False, {
+                    "error": f"参数 {field} 值不合法，允许的值: {allowed_values}，实际: {value}",
+                    "field": field,
+                    "allowed_values": allowed_values,
+                    "actual_value": value,
+                    "code": ErrorCode.INVALID_PARAMETER.value
+                }
+
+        # 最小值校验
+        if "minimum" in field_schema and isinstance(value, (int, float)):
+            min_value = field_schema["minimum"]
+            if value < min_value:
+                return False, {
+                    "error": f"参数 {field} 值不能小于 {min_value}，实际: {value}",
+                    "field": field,
+                    "minimum": min_value,
+                    "actual_value": value,
+                    "code": ErrorCode.INVALID_PARAMETER.value
+                }
+
+        # 最大值校验
+        if "maximum" in field_schema and isinstance(value, (int, float)):
+            max_value = field_schema["maximum"]
+            if value > max_value:
+                return False, {
+                    "error": f"参数 {field} 值不能大于 {max_value}，实际: {value}",
+                    "field": field,
+                    "maximum": max_value,
+                    "actual_value": value,
+                    "code": ErrorCode.INVALID_PARAMETER.value
+                }
+
+    return True, None

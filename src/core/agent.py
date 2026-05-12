@@ -4,7 +4,7 @@ import time
 import logging
 import concurrent.futures
 from typing import Any, Dict, List, Optional, Tuple
-from ..file.basic import TOOL_REGISTRY, TOOL_SCHEMAS, ToolNames
+from ..file.basic import TOOL_REGISTRY, TOOL_SCHEMAS, ToolNames, validate_tool_parameters
 from ..security.undo import set_active_session
 from ..infra.utils import log_action
 from ..infra.config import get_config
@@ -24,26 +24,11 @@ def _thinking_animation(stop_event: threading.Event) -> None:
     # 清除动画行
     sys.stdout.write("\r" + " " * 40 + "\r")
     sys.stdout.flush()
-SYSTEM_PROMPT = """你是一个本地文件操作助手。你可以帮助用户管理本地文件和文件夹。
-支持的操作：
-- 移动文件/文件夹
-- 复制文件/文件夹
-- 删除文件/文件夹（危险操作，执行前请确认用户意图）
-- 创建文件夹
-- 创建文件
-- 读取文件内容
-- 写入文件内容（覆盖或追加）
-- 重命名文件/文件夹
-- 搜索文件/文件夹
-- 列出文件
-- 扫描磁盘占用（统计各文件夹大小）
-- 撤销最近的操作（支持指定步数,批量操作算一步整体撤销）
-- 查看撤销历史
-- 批量执行多个操作（适合需要一次完成多个相关写操作的场景,如整理目录、批量改名;失败可一次撤销全部）
-请先理解用户的意图，然后选择合适的工具执行操作。
-涉及大量同类操作（>=3 个相关步骤）时,优先使用 batch_operations,这样用户可以一次撤销整个批量。
-执行危险操作（如删除、覆盖写入）前，请确保用户明确确认。
-如果完成用户的请求需要多步工具操作，请逐步进行，每一步根据上一步结果决定下一步动作。"""
+SYSTEM_PROMPT = """你是一个本地文件操作助手，可以帮助用户管理本地文件和文件夹。
+支持的操作：移动、复制、删除、创建文件/文件夹，读写文件内容，重命名，搜索文件，列出目录，压缩/解压，撤销操作，批量操作等。
+请直接理解用户意图并执行对应操作，回复简洁明了，不要重复用户指令，不需要罗列支持的功能列表。
+涉及大量同类操作（>=3 个相关步骤）时，优先使用 batch_operations，方便用户一次撤销。
+执行删除、覆盖等危险操作前，请先确认用户意图。"""
 class FileAgent:
     """文件操作代理"""
     def __init__(self, llm_provider, session_id=None, interactive=True, tool_status_callback=None):
@@ -117,6 +102,14 @@ class FileAgent:
             error_msg = f"未知工具: {tool_name}"
             logger.warning(error_msg)
             return {"success": False, "error": error_msg}
+
+        # 参数校验
+        valid, error = validate_tool_parameters(tool_name, tool_args)
+        if not valid:
+            error_msg = error["error"]
+            logger.warning(f"工具参数校验失败 [{tool_name}]: {error_msg}")
+            return {"success": False, "error": error_msg, "details": error}
+
         timeout = get_config().get("tool_timeout", ConfigDefaults.TOOL_TIMEOUT)
         # 对 batch_operations 自动注入 interactive 参数以显示进度
         effective_args = dict(tool_args)

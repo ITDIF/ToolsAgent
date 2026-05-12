@@ -3,6 +3,7 @@ import sys
 import io
 import time
 import logging
+import shutil
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -329,14 +330,14 @@ def main():
     MSG_START_STR = MSG_START.decode('utf-8')
     MSG_END_STR = MSG_END.decode('utf-8')
 
-    # 如果指定了 --tui 参数，启动 TUI 界面
+    # 如果指定了 --tui 参数，启动 Node.js TUI 界面
     if args.tui:
         import sys
         import json
         import uuid
         import socket
         import threading
-        from src.tui.app import TUIApp
+        import subprocess
 
         try:
             # 启动本地 Socket 服务
@@ -564,13 +565,69 @@ def main():
             # 启动Socket服务线程
             threading.Thread(target=socket_server_thread, daemon=True).start()
 
-            # 直接启动 Python TUI 应用（在主线程中运行）
-            tui_app = TUIApp(port)
-            tui_app.run()
+            # 启动 Node.js TUI 应用
+            tui_dir = Path(__file__).parent.parent.parent / "tui"
+            tui_script = tui_dir / "dist" / "main.js"
 
-            is_running = False
-            print(f"\n{Color.GRAY}会话已保存，再见!{Color.RESET}")
-            shutdown_log_writer()
+            # 检测 npm 和 node 命令
+            npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+            node_cmd = "node.exe" if sys.platform == "win32" else "node"
+
+            # 检查 npm 和 node 是否可用
+            npm_available = shutil.which(npm_cmd) is not None
+            node_available = shutil.which(node_cmd) is not None
+
+            if not npm_available or not node_available:
+                print(f"{Color.RED}错误: Node.js 和 npm 未安装或不在 PATH 中{Color.RESET}")
+                print(f"{Color.GRAY}请安装 Node.js: https://nodejs.org/{Color.RESET}")
+                print(f"{Color.GRAY}或使用传统 CLI 模式: python -m src.cli.main{Color.RESET}")
+                return
+
+            if not tui_script.exists():
+                # 如果构建文件不存在，尝试自动构建
+                print(f"{Color.YELLOW}Node.js TUI 未构建，正在构建...{Color.RESET}")
+                try:
+                    result = subprocess.run(
+                        [npm_cmd, "run", "build"],
+                        cwd=tui_dir,
+                        check=True,
+                        capture_output=True,
+                        text=True
+                    )
+                except subprocess.CalledProcessError as e:
+                    print(f"{Color.RED}Node.js TUI 构建失败{Color.RESET}")
+                    if e.stderr:
+                        print(f"{Color.RED}{e.stderr}{Color.RESET}")
+                    print(f"\n{Color.GRAY}请手动运行: cd tui && npm install && npm run build{Color.RESET}")
+                    print(f"{Color.GRAY}或使用传统 CLI 模式: python -m src.cli.main{Color.RESET}")
+                    return
+
+            # 设置环境变量，传递端口
+            env = os.environ.copy()
+            env["TUI_BACKEND_PORT"] = str(port)
+
+            # 启动 Node.js TUI 进程
+            try:
+                print(f"{Color.GRAY}正在启动 TUI 界面...{Color.RESET}")
+                node_process = subprocess.Popen(
+                    [node_cmd, str(tui_script)],
+                    cwd=tui_dir,
+                    env=env
+                )
+
+                # 等待 TUI 进程结束
+                node_process.wait()
+                is_running = False
+                print(f"\n{Color.GRAY}会话已保存，再见!{Color.RESET}")
+                shutdown_log_writer()
+            except FileNotFoundError:
+                print(f"{Color.RED}错误: 找不到 node 命令{Color.RESET}")
+                print(f"{Color.GRAY}请确保 Node.js 已安装并在 PATH 中{Color.RESET}")
+            except KeyboardInterrupt:
+                is_running = False
+                print(f"\n{Color.GRAY}会话已保存，再见!{Color.RESET}")
+                shutdown_log_writer()
+
 
         except Exception as e:
             print(f"{Color.RED}TUI 运行错误: {str(e)}{Color.RESET}")

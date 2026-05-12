@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "dev": "tsx src/main.tsx",
-    "start": "node dist/main.js",
+    "dev": "tsx src/main.tsx 9999",
+    "dev-help": "tsx src/main.tsx",
+    "start": "node dist/main.js 9999",
     "watch": "tsc --watch"
   },
   "dependencies": {
