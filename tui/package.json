@@ -1,13 +1,13 @@
 {
-  "name": "claude-code-tui",
-  "version": "0.1.0",
-  "description": "TUI clone of Claude Code",
+  "name": "toolsagent-tui",
+  "version": "0.2.0",
+  "description": "ToolsAgent TUI frontend",
   "type": "module",
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/main.tsx 9999",
     "dev-help": "tsx src/main.tsx",
-    "start": "node dist/main.js 9999",
+    "start": "node dist/main.js",
     "watch": "tsc --watch"
   },
   "dependencies": {

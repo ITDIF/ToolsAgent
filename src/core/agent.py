@@ -31,13 +31,14 @@ SYSTEM_PROMPT = """你是一个本地文件操作助手，可以帮助用户管�
 执行删除、覆盖等危险操作前，请先确认用户意图。"""
 class FileAgent:
     """文件操作代理"""
-    def __init__(self, llm_provider, session_id=None, interactive=True, tool_status_callback=None):
+    def __init__(self, llm_provider, session_id=None, interactive=True, tool_status_callback=None, confirm_callback=None):
         self.llm = llm_provider
         self.messages = []
         self.total_tokens = {"input": 0, "output": 0, "total": 0}
         self.session_id = session_id or "default"
         self.interactive = interactive
-        self.tool_status_callback = tool_status_callback  # 工具状态回调函数，用于TUI模式显示执行状态
+        self.tool_status_callback = tool_status_callback
+        self.confirm_callback = confirm_callback  # 工具状态回调函数，用于TUI模式显示执行状态
         # 本次进程生命周期内已被\"会话级\"授权的工具类型集合
         # 切换 session_id / 模型时不清空，仅在进程退出时丢失
         self.session_authorized_tools: set[str] = set()
@@ -173,10 +174,10 @@ class FileAgent:
                         print(f"  ⎿  {desc}")
                         if self.tool_status_callback:
                             self.tool_status_callback("running", tool_name, tool_args, desc)
-                    choice = select_option(
-                        "  请选择操作:",
-                        ["本次允许", "本次会话允许", "取消"],
-                        default=0,
+                    choice = (
+                        self.confirm_callback("请选择操作:", ["本次允许", "本次会话允许", "取消"], default=0)
+                        if self.confirm_callback
+                        else select_option("  请选择操作:", ["本次允许", "本次会话允许", "取消"], default=0)
                     )
                     if choice == 1:
                         self._add_session_authorization(tool_name, tool_args)

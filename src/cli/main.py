@@ -270,6 +270,207 @@ def _print_help():
   {Color.YELLOW}/quit{Color.RESET}       退出程序 (别名: /q, /exit)""")
 
 
+def _run_tui(provider, default_model, session_id):
+    """启动 TUI 模式"""
+    from src.ui.tui_bridge import TuiBridge
+    from src.ui.tui_commands import dispatch_command
+    import threading
+    import subprocess
+
+    bridge = TuiBridge()
+    port = bridge.start_server()
+
+    # 构造工具状态回调
+    def _build_tool_status_sender(tui_bridge):
+        _active_tools = {}
+
+        def sender(status, tool_name, args_or_result, description):
+            import time as _t
+            if status == "running":
+                msg_id = f"{tool_name}_{int(_t.time() * 1000)}"
+                _active_tools[tool_name] = msg_id
+                tui_bridge.send("tool_status", {
+                    "id": msg_id,
+                    "toolName": tool_name,
+                    "status": status,
+                    "description": description,
+                    "parameters": args_or_result if isinstance(args_or_result, dict) else None,
+                })
+            else:
+                msg_id = _active_tools.pop(tool_name, f"{tool_name}_unknown")
+                tui_bridge.send("tool_status", {
+                    "id": msg_id,
+                    "toolName": tool_name,
+                    "status": status,
+                    "description": description,
+                    "result": args_or_result if isinstance(args_or_result, dict) and status == "success" else None,
+                    "error": str(args_or_result) if status == "error" else None,
+                })
+        return sender
+
+    agent = FileAgent(
+        provider, session_id=session_id,
+        interactive=False,
+        tool_status_callback=_build_tool_status_sender(bridge),
+        confirm_callback=bridge.request_confirmation,
+    )
+
+    def _process_user_input(content, tui_bridge, file_agent, sid):
+        """在独立线程中处理用户输入"""
+        try:
+            before = time.time()
+            before_usage = file_agent.get_token_usage()
+            try:
+                tui_bridge.send("thinking_start", {})
+                response = file_agent.process(content)
+                elapsed = time.time() - before
+                after_usage = file_agent.get_token_usage()
+
+                tui_bridge.send("thinking_end", {
+                    "elapsed": elapsed,
+                    "tokenUsage": {
+                        "input": after_usage["input"] - before_usage["input"],
+                        "output": after_usage["output"] - before_usage["output"],
+                        "total": after_usage["total"] - before_usage["total"],
+                    },
+                })
+
+                tui_bridge.send("assistant_msg", {
+                    "content": response,
+                    "elapsed": elapsed,
+                    "tokenUsage": {
+                        "input": after_usage["input"] - before_usage["input"],
+                        "output": after_usage["output"] - before_usage["output"],
+                        "total": after_usage["total"] - before_usage["total"],
+                    },
+                })
+            except Exception as e:
+                import traceback
+                logging.error(f"处理消息失败: {e}\n{traceback.format_exc()}")
+                tui_bridge.send("error", {"content": f"处理失败: {e}"})
+
+            save_session(sid, file_agent.messages)
+        except Exception as e:
+            import traceback
+            logging.error(f"消息处理循环异常: {e}\n{traceback.format_exc()}")
+            try:
+                tui_bridge.send("error", {"content": f"系统错误: {e}"})
+            except Exception:
+                pass
+
+    def _handle_tui_message(message, tui_bridge, file_agent, sid):
+        """处理来自 TUI 的消息"""
+        msg_type = message.get("type")
+        payload = message.get("payload", message)
+
+        if msg_type == "user_input":
+            content = payload.get("content", "")
+            if not content:
+                return
+
+            # 斜杠命令
+            if content.startswith("/"):
+                parts = content[1:].split(maxsplit=1)
+                cmd_name = parts[0].lower() if parts else ""
+                cmd_args = {}
+                if len(parts) > 1:
+                    if cmd_name in ("undo", "u"):
+                        try:
+                            cmd_args["count"] = int(parts[1].strip())
+                        except ValueError:
+                            pass
+                if cmd_name in ("exit", "quit", "q"):
+                    tui_bridge.send("system_notify", {"content": "正在退出...", "level": "info"})
+                    return
+                dispatch_command(tui_bridge, file_agent, sid, cmd_name, cmd_args)
+                return
+
+            # 异步处理用户输入
+            threading.Thread(
+                target=_process_user_input,
+                args=(content, tui_bridge, file_agent, sid),
+                daemon=True
+            ).start()
+
+        elif msg_type == "command":
+            name = payload.get("name", "")
+            cmd_args = payload.get("args", {}) or {}
+            if name in ("exit", "quit", "q"):
+                tui_bridge.send("system_notify", {"content": "正在退出...", "level": "info"})
+                return
+            dispatch_command(tui_bridge, file_agent, sid, name, cmd_args)
+
+    # 注册消息处理器
+    bridge.on_message(lambda msg: _handle_tui_message(msg, bridge, agent, session_id))
+
+    # 启动 Node.js TUI 应用
+    tui_dir = Path(__file__).parent.parent.parent / "tui"
+    tui_script = tui_dir / "dist" / "main.js"
+
+    # 检测 npm 和 node 命令
+    npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
+    node_cmd = "node.exe" if sys.platform == "win32" else "node"
+
+    npm_available = shutil.which(npm_cmd) is not None
+    node_available = shutil.which(node_cmd) is not None
+
+    if not npm_available or not node_available:
+        print(f"{Color.RED}错误: Node.js 和 npm 未安装或不在 PATH 中{Color.RESET}")
+        print(f"{Color.GRAY}请安装 Node.js: https://nodejs.org/{Color.RESET}")
+        print(f"{Color.GRAY}或使用传统 CLI 模式: python -m src.cli.main{Color.RESET}")
+        return
+
+    if not tui_script.exists():
+        print(f"{Color.YELLOW}Node.js TUI 未构建，正在构建...{Color.RESET}")
+        try:
+            subprocess.run(
+                [npm_cmd, "run", "build"],
+                cwd=tui_dir,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+        except subprocess.CalledProcessError as e:
+            print(f"{Color.RED}Node.js TUI 构建失败{Color.RESET}")
+            if e.stderr:
+                print(f"{Color.RED}{e.stderr}{Color.RESET}")
+            print(f"\n{Color.GRAY}请手动运行: cd tui && npm install && npm run build{Color.RESET}")
+            print(f"{Color.GRAY}或使用传统 CLI 模式: python -m src.cli.main{Color.RESET}")
+            return
+
+    # 设置环境变量，传递端口
+    env = os.environ.copy()
+    env["TUI_BACKEND_PORT"] = str(port)
+
+    try:
+        print(f"{Color.GRAY}正在启动 TUI 界面...{Color.RESET}")
+
+        node_process = subprocess.Popen(
+            [node_cmd, str(tui_script)],
+            cwd=tui_dir,
+            env=env
+        )
+
+        bridge.wait_for_connection()
+
+        bridge.send("ready", {
+            "model": default_model,
+            "sessionId": session_id,
+        })
+
+        node_process.wait()
+        bridge.close()
+        print(f"\n{Color.GRAY}会话已保存，再见!{Color.RESET}")
+        shutdown_log_writer()
+    except FileNotFoundError:
+        print(f"{Color.RED}错误: 找不到 node 命令{Color.RESET}")
+        print(f"{Color.GRAY}请确保 Node.js 已安装并在 PATH 中{Color.RESET}")
+    except KeyboardInterrupt:
+        bridge.close()
+        print(f"\n{Color.GRAY}会话已保存，再见!{Color.RESET}")
+        shutdown_log_writer()
+
+
 def main():
     import argparse
     from pathlib import Path
@@ -282,7 +483,6 @@ def main():
     # 配置日志
     log_dir = Path.home() / ".toolsagent" / "logs"
     log_level = logging.INFO
-    # TUI模式下禁用stdout日志输出，避免污染界面
     if args.tui:
         configure_logging(level=logging.WARNING, log_dir=log_dir, log_to_console=False)
     else:
@@ -309,329 +509,22 @@ def main():
 
     # 默认新建会话
     session_id = generate_session_id()
-    # TUI模式下禁用Agent的交互式输出，改为通过消息机制通知
-    agent = FileAgent(provider, session_id=session_id, interactive=not args.tui)
 
-    # 非TUI模式下才打印欢迎信息和帮助
-    if not args.tui:
-        print(
-            f"{Color.BOLD}本地文件操作助手{Color.RESET}  {Color.GRAY}—  输入 /help 查看命令，或使用 --tui 参数启动现代化界面{Color.RESET}")
-        print()
-        if provider:
-            print(f"{Color.GRAY}已加载默认模型: {default_model}{Color.RESET}")
-        print(f"{Color.GRAY}新会话 {session_id}{Color.RESET}")
-        _print_help()
-
-    # TUI 相关全局变量
-    client_socket = None
-    send_message_to_tui = None
-    MSG_START = b"<<<MSG_START>>>"  # 字节形式用于解析
-    MSG_END = b"<<<MSG_END>>>"
-    MSG_START_STR = MSG_START.decode('utf-8')
-    MSG_END_STR = MSG_END.decode('utf-8')
-
-    # 如果指定了 --tui 参数，启动 Node.js TUI 界面
+    # ===== TUI 模式 =====
     if args.tui:
-        import sys
-        import json
-        import uuid
-        import socket
-        import threading
-        import subprocess
-
-        try:
-            # 启动本地 Socket 服务
-            server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server_socket.bind(('127.0.0.1', 0))  # 绑定随机端口
-            server_socket.listen(1)
-            server_socket.settimeout(None)
-            port = server_socket.getsockname()[1]
-
-            is_running = True
-
-            def _send_message_to_tui(msg_type: str, payload: dict):
-                """发送消息给 TUI 界面"""
-                if not client_socket:
-                    import logging
-                    logging.warning("无法发送消息：client_socket为空")
-                    return
-                message = {
-                    "type": msg_type,
-                    "id": str(uuid.uuid4()),
-                    "timestamp": int(time.time() * 1000),
-                    **payload
-                }
-                msg_str = f"{MSG_START_STR}\n{json.dumps(message, ensure_ascii=False)}\n{MSG_END_STR}\n"
-                try:
-                    client_socket.sendall(msg_str.encode('utf-8'))
-                except Exception as e:
-                    import logging
-                    logging.error(f"发送消息给TUI失败: {str(e)}")
-
-            send_message_to_tui = _send_message_to_tui
-
-            def process_user_input(content: str):
-                """在独立线程中处理用户输入"""
-                try:
-                    import logging
-
-                    # 不需要确认消息，直接开始思考动画
-
-                    # 调用 Agent 处理
-                    before = time.time()
-                    before_usage = agent.get_token_usage()
-                    try:
-                        logging.info("开始调用agent.process")
-                        response = agent.process(content)
-                        logging.info(f"agent处理完成，响应长度: {len(response)}")
-
-                        elapsed = time.time() - before
-                        after_usage = agent.get_token_usage()
-
-                        # 发送助手回复
-                        send_message_to_tui("assistant_msg", {
-                            "content": response,
-                            "elapsed": elapsed,
-                            "token_usage": {
-                                "input": after_usage["input"] - before_usage["input"],
-                                "output": after_usage["output"] - before_usage["output"],
-                                "total": after_usage["total"] - before_usage["total"]
-                            }
-                        })
-                    except Exception as e:
-                        import traceback
-                        error_detail = traceback.format_exc()
-                        # 把错误详情写入日志
-                        logging.error(f"处理消息失败: {str(e)}\n{error_detail}")
-                        # 发送简化的错误信息给TUI
-                        send_message_to_tui("error", {
-                            "content": f"处理失败: {str(e)}"
-                        })
-
-                    # 自动保存会话
-                    save_session(session_id, agent.messages)
-                    logging.info("会话已保存")
-                except Exception as e:
-                    import traceback
-                    error_detail = traceback.format_exc()
-                    import logging
-                    logging.error(f"消息处理循环异常: {str(e)}\n{error_detail}")
-                    try:
-                        send_message_to_tui("error", {
-                            "content": f"系统错误: {str(e)}"
-                        })
-                    except:
-                        pass
-
-            def handle_tui_message(message: dict):
-                """处理来自 TUI 的消息"""
-                try:
-                    import logging
-                    logging.info(f"收到TUI消息: {message}")
-
-
-                    msg_type = message.get("type")
-                    if msg_type == "user_input":
-                        content = message.get("content", "")
-                        logging.info(f"用户输入: {content}")
-
-                        # 处理TUI命令
-                        if content.startswith("/"):
-                            if content.lower() in ["/exit", "/quit", "/q"]:
-                                send_message_to_tui("system_notify", {
-                                    "content": "正在退出...",
-                                    "level": "info"
-                                })
-                                global is_running
-                                is_running = False
-                                return
-                            elif content.lower() in ["/help", "/h"]:
-                                help_text = """可用命令:
-/help, /h    显示帮助信息
-/model, /m   切换模型
-/exit, /q    退出程序
-"""
-                                send_message_to_tui("assistant_msg", {
-                                    "content": help_text
-                                })
-                                return
-                            elif content.lower() in ["/model", "/m"]:
-                                # 切换模型
-                                send_message_to_tui("system_notify", {
-                                    "content": "请在终端中选择模型...",
-                                    "level": "info"
-                                })
-                                # 因为select_model函数会直接打印到终端
-                                new_provider = select_model()
-                                if new_provider:
-                                    agent.llm = new_provider
-                                    # 提取模型名（兼容不同provider的格式）
-                                    model_name = getattr(new_provider, 'model', str(new_provider))
-                                    send_message_to_tui("model_update", {
-                                        "model": model_name
-                                    })
-                                    send_message_to_tui("assistant_msg", {
-                                        "content": f"✅ 模型已切换为: {model_name}"
-                                    })
-                                return
-
-                        # 异步处理用户输入，避免阻塞socket线程
-                        import threading
-                        threading.Thread(target=process_user_input, args=(content,), daemon=True).start()
-                except Exception as e:
-                    import traceback
-                    error_detail = traceback.format_exc()
-                    import logging
-                    logging.error(f"消息处理循环异常: {str(e)}\n{error_detail}")
-                    try:
-                        send_message_to_tui("error", {
-                            "content": f"系统错误: {str(e)}"
-                        })
-                    except:
-                        pass
-
-            def socket_server_thread():
-                """Socket服务线程，处理与TUI的通信"""
-                nonlocal client_socket
-                try:
-                    client_socket, addr = server_socket.accept()
-                    client_socket.settimeout(None)
-
-                    # 连接成功后，发送当前模型信息给前端
-                    send_message_to_tui("model_update", {
-                        "model": default_model
-                    })
-
-                    buffer = b""
-
-                    while is_running:
-                        try:
-                            data = client_socket.recv(4096)  # 增大缓冲区
-                            if not data:
-                                break
-
-                            buffer += data
-
-                            # 在字节层面搜索消息边界，避免字节/字符索引不匹配问题
-                            while True:
-                                # 查找消息开始标记
-                                start_pos = buffer.find(MSG_START)
-                                if start_pos == -1:
-                                    break  # 没有完整消息，继续接收
-
-                                # 查找消息结束标记（从开始标记后面找）
-                                end_pos = buffer.find(MSG_END, start_pos + len(MSG_START))
-                                if end_pos == -1:
-                                    break  # 消息不完整，继续接收
-
-                                # 提取消息内容（去掉开始和结束标记）
-                                msg_bytes = buffer[start_pos + len(MSG_START) : end_pos]
-
-                                # 移除已处理的部分（包括结束标记）
-                                buffer = buffer[end_pos + len(MSG_END) :]
-
-                                # 解码并解析JSON
-                                try:
-                                    msg_str = msg_bytes.decode('utf-8')
-                                    message = json.loads(msg_str)
-                                    handle_tui_message(message)
-                                except (UnicodeDecodeError, json.JSONDecodeError):
-                                    import logging
-                                    logging.error(f"解析 TUI 消息失败")
-                                    continue
-                        except Exception as e:
-                            import traceback
-                            error_detail = traceback.format_exc()
-                            import logging
-                            logging.error(f"Socket接收/处理消息异常: {str(e)}\n{error_detail}")
-                            break
-
-                except Exception as e:
-                    import traceback
-                    error_detail = traceback.format_exc()
-                    import logging
-                    logging.error(f"Socket 服务错误: {str(e)}\n{error_detail}")
-                finally:
-                    if client_socket:
-                        try:
-                            client_socket.close()
-                        except:
-                            pass
-                    try:
-                        server_socket.close()
-                    except:
-                        pass
-
-            # 启动Socket服务线程
-            threading.Thread(target=socket_server_thread, daemon=True).start()
-
-            # 启动 Node.js TUI 应用
-            tui_dir = Path(__file__).parent.parent.parent / "tui"
-            tui_script = tui_dir / "dist" / "main.js"
-
-            # 检测 npm 和 node 命令
-            npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-            node_cmd = "node.exe" if sys.platform == "win32" else "node"
-
-            # 检查 npm 和 node 是否可用
-            npm_available = shutil.which(npm_cmd) is not None
-            node_available = shutil.which(node_cmd) is not None
-
-            if not npm_available or not node_available:
-                print(f"{Color.RED}错误: Node.js 和 npm 未安装或不在 PATH 中{Color.RESET}")
-                print(f"{Color.GRAY}请安装 Node.js: https://nodejs.org/{Color.RESET}")
-                print(f"{Color.GRAY}或使用传统 CLI 模式: python -m src.cli.main{Color.RESET}")
-                return
-
-            if not tui_script.exists():
-                # 如果构建文件不存在，尝试自动构建
-                print(f"{Color.YELLOW}Node.js TUI 未构建，正在构建...{Color.RESET}")
-                try:
-                    result = subprocess.run(
-                        [npm_cmd, "run", "build"],
-                        cwd=tui_dir,
-                        check=True,
-                        capture_output=True,
-                        text=True
-                    )
-                except subprocess.CalledProcessError as e:
-                    print(f"{Color.RED}Node.js TUI 构建失败{Color.RESET}")
-                    if e.stderr:
-                        print(f"{Color.RED}{e.stderr}{Color.RESET}")
-                    print(f"\n{Color.GRAY}请手动运行: cd tui && npm install && npm run build{Color.RESET}")
-                    print(f"{Color.GRAY}或使用传统 CLI 模式: python -m src.cli.main{Color.RESET}")
-                    return
-
-            # 设置环境变量，传递端口
-            env = os.environ.copy()
-            env["TUI_BACKEND_PORT"] = str(port)
-
-            # 启动 Node.js TUI 进程
-            try:
-                print(f"{Color.GRAY}正在启动 TUI 界面...{Color.RESET}")
-                node_process = subprocess.Popen(
-                    [node_cmd, str(tui_script)],
-                    cwd=tui_dir,
-                    env=env
-                )
-
-                # 等待 TUI 进程结束
-                node_process.wait()
-                is_running = False
-                print(f"\n{Color.GRAY}会话已保存，再见!{Color.RESET}")
-                shutdown_log_writer()
-            except FileNotFoundError:
-                print(f"{Color.RED}错误: 找不到 node 命令{Color.RESET}")
-                print(f"{Color.GRAY}请确保 Node.js 已安装并在 PATH 中{Color.RESET}")
-            except KeyboardInterrupt:
-                is_running = False
-                print(f"\n{Color.GRAY}会话已保存，再见!{Color.RESET}")
-                shutdown_log_writer()
-
-
-        except Exception as e:
-            print(f"{Color.RED}TUI 运行错误: {str(e)}{Color.RESET}")
+        _run_tui(provider, default_model, session_id)
         return
+
+    # ===== CLI 模式 =====
+    agent = FileAgent(provider, session_id=session_id, interactive=True)
+
+    print(
+        f"{Color.BOLD}本地文件操作助手{Color.RESET}  {Color.GRAY}—  输入 /help 查看命令，或使用 --tui 参数启动现代化界面{Color.RESET}")
+    print()
+    if provider:
+        print(f"{Color.GRAY}已加载默认模型: {default_model}{Color.RESET}")
+    print(f"{Color.GRAY}新会话 {session_id}{Color.RESET}")
+    _print_help()
 
     while True:
         try:
@@ -670,13 +563,6 @@ def main():
                     new_provider = select_model()
                     if new_provider:
                         agent.llm = new_provider
-                        # 如果是TUI模式，同步更新前端显示的模型名
-                        if args.tui and send_message_to_tui and client_socket:
-                            # 提取模型名（兼容不同provider的格式）
-                            model_name = getattr(new_provider, 'model', str(new_provider))
-                            send_message_to_tui("model_update", {
-                                "model": model_name
-                            })
                         print(f"{Color.GREEN}模型已切换{Color.RESET}")
                     continue
                 elif cmd in ["help", "h"]:
