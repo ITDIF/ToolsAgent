@@ -71,19 +71,20 @@ class UndoManager:
         """清空指定(默认当前活动)会话的撤销栈,回收备份"""
         with self._undo_lock:
             sid = session_id or self._active_session_id
-            stack = self._undo_stacks.get(sid, [])
-            for action in stack:
-                self._cleanup_action_backup(action)
-            if sid in self._undo_stacks:
-                self._undo_stacks[sid] = []
+            stack = self._undo_stacks.pop(sid, [])
+        # 锁外清理
+        for action in stack:
+            self._cleanup_action_backup(action)
 
     def clear_all_undo_stacks(self) -> None:
         """清空所有会话的撤销栈"""
         with self._undo_lock:
-            for sid, stack in list(self._undo_stacks.items()):
-                for action in stack:
-                    self._cleanup_action_backup(action)
+            all_stacks = list(self._undo_stacks.values())
             self._undo_stacks.clear()
+        # 锁外清理
+        for stack in all_stacks:
+            for action in stack:
+                self._cleanup_action_backup(action)
 
     def cleanup_old_backups(self, max_age_hours: int = UndoConstants.BACKUP_MAX_AGE_HOURS) -> int:
         """清理超过 max_age_hours 的临时备份目录"""
@@ -126,12 +127,15 @@ class UndoManager:
         if sub_actions is not None:
             sub_actions.append(action)
             return
+        pruned = []
         with self._undo_lock:
             stack = self._active_stack()
             stack.append(action)
             while len(stack) > self._max_undo:
-                old = stack.pop(0)
-                self._cleanup_action_backup(old)
+                pruned.append(stack.pop(0))
+        # 锁外执行文件系统清理，避免长时间持锁
+        for old in pruned:
+            self._cleanup_action_backup(old)
 
     def describe_action(self, action: Dict[str, Any]) -> str:
         """生成单条 undo 记录的人类可读描述"""
@@ -397,7 +401,7 @@ class UndoManager:
                 if not stack:
                     break
                 action = stack.pop()
-                ok, payload = self._apply_undo_action(action)
+            ok, payload = self._apply_undo_action(action)
             if not ok:
                 failures += 1
                 results.append({"success": False, "error": payload, "type": action.get("type")})

@@ -5,7 +5,7 @@ import re
 import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
-from threading import Lock, Thread
+from threading import Lock, Thread, Event
 from queue import Queue
 
 from .constants import FileConstants
@@ -147,6 +147,7 @@ class _BatchLogWriter:
         self._lock = Lock()
         self._thread: Optional[Thread] = None
         self._running = False
+        self._flush_event = Event()
 
     def start(self):
         """启动后台写入线程"""
@@ -207,6 +208,7 @@ class _BatchLogWriter:
                                 safe_entry = sanitize_for_json(entry)
                                 f.write(json.dumps(safe_entry, ensure_ascii=False) + "\n")
                     last_flush = datetime.datetime.now().timestamp()
+                    self._flush_event.set()
                 except Exception as e:
                     logger.warning("批量写入日志失败: %s", e)
 
@@ -245,12 +247,11 @@ _writer_lock = Lock()
 def _get_batch_writer() -> _BatchLogWriter:
     """获取全局批量日志写入器单例"""
     global _batch_writer
-    if _batch_writer is None:
-        with _writer_lock:
-            if _batch_writer is None:
-                _batch_writer = _BatchLogWriter()
-                _batch_writer.start()
-    return _batch_writer
+    with _writer_lock:
+        if _batch_writer is None:
+            _batch_writer = _BatchLogWriter()
+            _batch_writer.start()
+        return _batch_writer
 
 
 def log_action(action_type: str, params: Dict[str, Any], result: Dict[str, Any]) -> None:
@@ -293,9 +294,7 @@ def flush_logs():
     """刷新日志写入器，确保所有待写入的日志都被写入文件"""
     global _batch_writer
     if _batch_writer is not None:
-        # 通过添加一个空条目触发批量写入
-        _batch_writer.add({})  # 空条目会被忽略
-        # 等待一小段时间确保写入完成
-        import time
-        time.sleep(0.1)
+        _batch_writer._flush_event.clear()
+        _batch_writer.add({})  # 空条目触发批量写入
+        _batch_writer._flush_event.wait(timeout=2.0)
 

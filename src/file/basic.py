@@ -32,6 +32,43 @@ from ..file.archive import extract_archive as _extract_archive, create_archive a
 logger = __import__("logging").getLogger(__name__)
 
 
+def _require_safe_write(*path_args: str):
+    """装饰器：为写操作函数自动添加路径安全校验。
+
+    Args:
+        *path_args: 需要校验的参数名列表（如 "path", "src", "dst"）。
+                    如果在批量上下文中且路径已预先校验，则跳过。
+
+    用法:
+        @_require_safe_write("src", "dst")
+        def move_file(src, dst): ...
+    """
+    def decorator(func):
+        from functools import wraps
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            # 批量上下文中且路径已预校验，跳过
+            if _get_batch_context() is not None and _is_paths_validated():
+                return func(*args, **kwargs)
+            # 解析参数：获取需要校验的路径值
+            import inspect
+            sig = inspect.signature(func)
+            bound = sig.bind(*args, **kwargs)
+            bound.apply_defaults()
+            cfg = get_config()
+            for arg_name in path_args:
+                path_value = bound.arguments.get(arg_name)
+                if path_value is None:
+                    continue
+                try:
+                    assert_safe_write_path(path_value, cfg)
+                except PathSafetyError as e:
+                    return {"success": False, "error": str(e)}
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+
 class ToolNames:
     """工具名称常量"""
     MOVE_FILE = "move_file"
@@ -86,6 +123,7 @@ _BATCH_ALLOWED_TOOLS = {
 }
 
 
+@_require_safe_write("src", "dst")
 def move_file(src: str, dst: str) -> Dict[str, Any]:
     """移动文件或文件夹"""
     src_path = Path(src)
@@ -93,15 +131,6 @@ def move_file(src: str, dst: str) -> Dict[str, Any]:
 
     if not src_path.exists():
         return {"success": False, "error": f"源路径不存在: {src}"}
-
-    # 如果在批量上下文中且路径已预先校验，则跳过校验
-    if not (_get_batch_context() is not None and _is_paths_validated()):
-        cfg = get_config()
-        try:
-            assert_safe_write_path(src, cfg)
-            assert_safe_write_path(dst, cfg)
-        except PathSafetyError as e:
-            return {"success": False, "error": str(e)}
 
     dst_snap = capture_target_state(dst)
     try:
@@ -127,6 +156,7 @@ def move_file(src: str, dst: str) -> Dict[str, Any]:
         return {"success": False, "error": f"未知错误: {e}"}
 
 
+@_require_safe_write("dst")
 def copy_file(src: str, dst: str) -> Dict[str, Any]:
     """复制文件或文件夹"""
     src_path = Path(src)
@@ -134,14 +164,6 @@ def copy_file(src: str, dst: str) -> Dict[str, Any]:
 
     if not src_path.exists():
         return {"success": False, "error": f"源路径不存在: {src}"}
-
-    # 如果在批量上下文中且路径已预先校验，则跳过校验
-    if not (_get_batch_context() is not None and _is_paths_validated()):
-        cfg = get_config()
-        try:
-            assert_safe_write_path(dst, cfg)
-        except PathSafetyError as e:
-            return {"success": False, "error": str(e)}
 
     dst_snap = capture_target_state(dst)
     try:
@@ -173,20 +195,13 @@ def copy_file(src: str, dst: str) -> Dict[str, Any]:
         return {"success": False, "error": f"未知错误: {e}"}
 
 
+@_require_safe_write("path")
 def delete_file(path: str) -> Dict[str, Any]:
     """删除文件或文件夹"""
     file_path = Path(path)
 
     if not file_path.exists():
         return {"success": False, "error": f"路径不存在: {path}"}
-
-    # 如果在批量上下文中且路径已预先校验，则跳过校验
-    if not (_get_batch_context() is not None and _is_paths_validated()):
-        cfg = get_config()
-        try:
-            assert_safe_write_path(path, cfg)
-        except PathSafetyError as e:
-            return {"success": False, "error": str(e)}
 
     try:
         # 备份被删除的文件/文件夹
@@ -213,17 +228,10 @@ def delete_file(path: str) -> Dict[str, Any]:
         return {"success": False, "error": f"未知错误: {e}"}
 
 
+@_require_safe_write("path")
 def create_folder(path: str) -> Dict[str, Any]:
     """创建文件夹"""
     folder_path = Path(path)
-
-    # 如果在批量上下文中且路径已预先校验，则跳过校验
-    if not (_get_batch_context() is not None and _is_paths_validated()):
-        cfg = get_config()
-        try:
-            assert_safe_write_path(path, cfg)
-        except PathSafetyError as e:
-            return {"success": False, "error": str(e)}
 
     try:
         existed = folder_path.exists()
@@ -242,17 +250,10 @@ def create_folder(path: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@_require_safe_write("path")
 def create_file(path: str, content: str = "") -> Dict[str, Any]:
     """创建文件,可指定内容。若目标已存在则备份原内容,撤销时可还原"""
     file_path = Path(path)
-
-    # 如果在批量上下文中且路径已预先校验，则跳过校验
-    if not (_get_batch_context() is not None and _is_paths_validated()):
-        cfg = get_config()
-        try:
-            assert_safe_write_path(path, cfg)
-        except PathSafetyError as e:
-            return {"success": False, "error": str(e)}
 
     snap = capture_target_state(path)
     try:
@@ -290,7 +291,6 @@ def read_file(path: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
     max_bytes = int(cfg.get("max_read_bytes", ConfigDefaults.MAX_READ_BYTES))
-    max_bytes = int(cfg.get("max_read_bytes", ConfigDefaults.MAX_READ_BYTES))
 
     try:
         size = file_path.stat().st_size
@@ -311,17 +311,10 @@ def read_file(path: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@_require_safe_write("path")
 def write_file(path: str, content: str, append: bool = False) -> Dict[str, Any]:
     """写入文件内容,支持覆盖或追加。两种模式都支持撤销"""
     file_path = Path(path)
-
-    # 如果在批量上下文中且路径已预先校验，则跳过校验
-    if not (_get_batch_context() is not None and _is_paths_validated()):
-        cfg = get_config()
-        try:
-            assert_safe_write_path(path, cfg)
-        except PathSafetyError as e:
-            return {"success": False, "error": str(e)}
 
     snap = None
     try:
@@ -358,6 +351,7 @@ def write_file(path: str, content: str, append: bool = False) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@_require_safe_write("src", "dst")
 def rename_file(src: str, dst: str) -> Dict[str, Any]:
     """重命名文件或文件夹"""
     src_path = Path(src)
@@ -365,15 +359,6 @@ def rename_file(src: str, dst: str) -> Dict[str, Any]:
 
     if not src_path.exists():
         return {"success": False, "error": f"源路径不存在: {src}"}
-
-    # 如果在批量上下文中且路径已预先校验，则跳过校验
-    if not (_get_batch_context() is not None and _is_paths_validated()):
-        cfg = get_config()
-        try:
-            assert_safe_write_path(src, cfg)
-            assert_safe_write_path(dst, cfg)
-        except PathSafetyError as e:
-            return {"success": False, "error": str(e)}
 
     dst_snap = capture_target_state(dst)
     try:
@@ -959,13 +944,14 @@ def batch_operations(
         if interactive:
             print(f"\033[93m  检测到执行失败，正在回滚 {len(sub_actions)} 个已执行的操作...\033[0m", flush=True)
 
-        # 从undo模块导入内部函数，避免循环导入
-        from src.security.undo import _apply_undo_action
+        # 从undo模块获取管理器实例调用内部方法
+        from ..security.undo import get_undo_manager
+        undo_mgr = get_undo_manager()
 
         # 按相反顺序回滚（撤销操作需要反向执行）
         for action in reversed(sub_actions):
             try:
-                ok, msg = _apply_undo_action(action)
+                ok, msg = undo_mgr._apply_undo_action(action)
                 if not ok:
                     rollback_success = False
                     rollback_errors.append(f"回滚失败: {msg}")
@@ -1012,8 +998,8 @@ def batch_operations(
             "message": f"预览模式：共 {len(results)} 个操作，{failures} 个可能失败"
         }
 
-    # 仅当没有失败，或原子性关闭时，才将批量操作入撤销栈
-    if sub_actions and (failures == 0 or not atomic):
+    # 入撤销栈：如果已回滚则不入栈；否则（成功或部分成功未回滚）入栈
+    if sub_actions and not (atomic and stop_on_error and failures > 0):
         push_undo({
             "type": UndoActionType.BATCH,
             "label": label or f"批量操作({len(sub_actions)} 步)",

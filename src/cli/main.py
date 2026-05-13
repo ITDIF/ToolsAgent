@@ -504,6 +504,7 @@ def _run_tui(provider, default_model, session_id):
 
         node_process.wait()
         bridge.close()
+        save_session(session_id, agent.messages)
         print(f"\n{Color.GRAY}会话已保存，再见!{Color.RESET}")
         shutdown_log_writer()
     except FileNotFoundError:
@@ -511,6 +512,7 @@ def _run_tui(provider, default_model, session_id):
         print(f"{Color.GRAY}请确保 Node.js 已安装并在 PATH 中{Color.RESET}")
     except KeyboardInterrupt:
         bridge.close()
+        save_session(session_id, agent.messages)
         print(f"\n{Color.GRAY}会话已保存，再见!{Color.RESET}")
         shutdown_log_writer()
 

@@ -42,6 +42,8 @@ class FileAgent:
         # 本次进程生命周期内已被\"会话级\"授权的工具类型集合
         # 切换 session_id / 模型时不清空，仅在进程退出时丢失
         self.session_authorized_tools: set[str] = set()
+        # 复用线程池，避免每次工具调用都创建/销毁
+        self._tool_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     def set_session(self, session_id):
         """切换当前会话 ID，后续工具调用会使用对应的撤销栈"""
         self.session_id = session_id or "default"
@@ -116,25 +118,24 @@ class FileAgent:
         effective_args = dict(tool_args)
         if tool_name == "batch_operations" and self.interactive:
             effective_args["interactive"] = True
-        # 用线程池执行，超时控制
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(TOOL_REGISTRY[tool_name], **effective_args)
-            try:
-                result = future.result(timeout=timeout)
-                log_action(tool_name, tool_args, result)
-                return result
-            except concurrent.futures.TimeoutError:
-                error_msg = f"工具执行超时（{timeout}秒）: {tool_name}"
-                logger.warning(error_msg)
-                return {"success": False, "error": error_msg}
-            except Exception as exc:
-                if isinstance(exc, TypeError):
-                    error_msg = f"工具参数错误 [{tool_name}]: {exc}"
-                    logger.error(error_msg)
-                else:
-                    error_msg = f"工具执行异常 [{tool_name}]: {exc}"
-                    logger.exception(error_msg, exc_info=exc)
-                return {"success": False, "error": error_msg}
+        # 复用线程池执行，超时控制
+        future = self._tool_executor.submit(TOOL_REGISTRY[tool_name], **effective_args)
+        try:
+            result = future.result(timeout=timeout)
+            log_action(tool_name, tool_args, result)
+            return result
+        except concurrent.futures.TimeoutError:
+            error_msg = f"工具执行超时（{timeout}秒）: {tool_name}"
+            logger.warning(error_msg)
+            return {"success": False, "error": error_msg}
+        except Exception as exc:
+            if isinstance(exc, TypeError):
+                error_msg = f"工具参数错误 [{tool_name}]: {exc}"
+                logger.error(error_msg)
+            else:
+                error_msg = f"工具执行异常 [{tool_name}]: {exc}"
+                logger.exception(error_msg, exc_info=exc)
+            return {"success": False, "error": error_msg}
     def _handle_tool_calls(
         self,
         tool_calls: List[Dict[str, Any]],
@@ -214,6 +215,33 @@ class FileAgent:
                         self.tool_status_callback("error", tool_name, result, err)
             executed.append((tool_call, result))
         return executed
+    def _run_with_animation(self, llm_call, is_chat=False):
+        """带思考动画执行 LLM 调用，返回 (response, delta, iter_elapsed)"""
+        iter_start = time.time()
+        stop_event = threading.Event()
+        anim_thread = None
+        if self.interactive:
+            anim_thread = threading.Thread(target=_thinking_animation, args=(stop_event,))
+            anim_thread.start()
+        try:
+            if is_chat:
+                response = self.llm.chat(messages=self.messages, system_prompt=SYSTEM_PROMPT)
+            else:
+                response = self.llm.chat_with_tools(
+                    messages=self.messages,
+                    tools=TOOL_SCHEMAS,
+                    system_prompt=SYSTEM_PROMPT,
+                )
+        finally:
+            stop_event.set()
+            if anim_thread is not None:
+                anim_thread.join()
+        delta = self._update_total_tokens()
+        iter_elapsed = time.time() - iter_start
+        if self.interactive and delta["total"] > 0:
+            print(f"\033[90m  [{iter_elapsed:.2f}s | +{delta['total']}t]\033[0m")
+        return response, delta, iter_elapsed
+
     def process(self, user_input: str, confirm_required: bool = True) -> str:
         """处理用户输入，支持多轮工具调用直到模型给出最终回复"""
         set_active_session(self.session_id)
@@ -228,26 +256,7 @@ class FileAgent:
                 msg = "请求处理时间过长，已中断。请简化需求后重试。"
                 self.messages.append({"role": "assistant", "content": msg})
                 return msg
-            iter_start = time.time()
-            stop_event = threading.Event()
-            anim_thread = None
-            if self.interactive:
-                anim_thread = threading.Thread(target=_thinking_animation, args=(stop_event,))
-                anim_thread.start()
-            try:
-                response = self.llm.chat_with_tools(
-                    messages=self.messages,
-                    tools=TOOL_SCHEMAS,
-                    system_prompt=SYSTEM_PROMPT,
-                )
-            finally:
-                stop_event.set()
-                if anim_thread is not None:
-                    anim_thread.join()
-            delta = self._update_total_tokens()
-            iter_elapsed = time.time() - iter_start
-            if self.interactive and delta["total"] > 0:
-                print(f"\033[90m  [{iter_elapsed:.2f}s | +{delta['total']}t]\033[0m")
+            response, delta, iter_elapsed = self._run_with_animation(None)
             if not response["tool_calls"]:
                 final = response["content"] or ""
                 self.messages.append({"role": "assistant", "content": final})
@@ -258,22 +267,7 @@ class FileAgent:
             )
             self.messages.extend(self.llm.build_tool_result_messages(executed))
         # 达到最大迭代次数仍未结束
-        iter_start = time.time()
-        stop_event = threading.Event()
-        anim_thread = None
-        if self.interactive:
-            anim_thread = threading.Thread(target=_thinking_animation, args=(stop_event,))
-            anim_thread.start()
-        try:
-            final_response = self.llm.chat(messages=self.messages, system_prompt=SYSTEM_PROMPT)
-        finally:
-            stop_event.set()
-            if anim_thread is not None:
-                anim_thread.join()
-        delta = self._update_total_tokens()
-        iter_elapsed = time.time() - iter_start
-        if self.interactive and delta["total"] > 0:
-            print(f"\033[90m  [{iter_elapsed:.2f}s | +{delta['total']}t]\033[0m")
+        final_response, _, _ = self._run_with_animation(None, is_chat=True)
         self.messages.append({"role": "assistant", "content": final_response})
         return final_response
     def _format_tool_call(self, tool_name, args):

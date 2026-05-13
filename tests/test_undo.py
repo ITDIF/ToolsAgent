@@ -324,7 +324,8 @@ class TestBatchOperations:
         assert r["failures"] == 1
         assert r["halted_at"] == 1
         assert r["executed"] == 2  # 第三步未执行
-        assert (temp_workspace / "ok.txt").exists()
+        # 原子性回滚：失败时已执行的 ok.txt 被自动回滚
+        assert not (temp_workspace / "ok.txt").exists()
         assert not (temp_workspace / "never.txt").exists()
 
     def test_batch_continue_on_error(self, temp_workspace):

@@ -74,6 +74,10 @@ class TuiBridge:
     def close(self) -> None:
         """关闭所有连接"""
         self._is_running = False
+        # 清理所有等待中的确认请求，防止调用方永远阻塞
+        for request_id, pending in list(self._pending_confirmations.items()):
+            pending.event.set()
+        self._pending_confirmations.clear()
         if self._client_socket:
             try:
                 self._client_socket.close()
