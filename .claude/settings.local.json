@@ -7,7 +7,10 @@
       "Bash(git add *)",
       "Bash(npm install *)",
       "Bash(npm run *)",
-      "Bash(TUI_BACKEND_PORT=12345 npm run *)"
+      "Bash(TUI_BACKEND_PORT=12345 npm run *)",
+      "Bash(node -e \"const ink = require\\('ink'\\); console.log\\(Object.keys\\(ink\\).filter\\(k => k.includes\\('std'\\) || k.includes\\('Std'\\) || k.includes\\('term'\\) || k.includes\\('Term'\\)\\)\\)\")",
+      "Bash(node -e \"import\\('ink'\\).then\\(m => console.log\\('useStdout' in m ? 'useStdout available' : 'NOT available'\\)\\)\")",
+      "Bash(npx tsc *)"
     ]
   }
 }

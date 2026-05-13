@@ -19,6 +19,7 @@ export class FallbackRenderer {
   private thinkingStart = 0
   private thinkingTokenDelta = 0
   private updateInterval: NodeJS.Timeout | null = null
+  private thinkingLineLen = 0
 
   constructor(bus: TypedEventBus, client: TuiClient) {
     this.bus = bus
@@ -61,6 +62,7 @@ export class FallbackRenderer {
       if (payload.tokenUsage?.total) meta.push(`+${payload.tokenUsage.total}t`)
       const metaStr = meta.length ? chalk.gray(` [${meta.join(' | ')}]`) : ''
 
+      this.clearThinkingLine()
       console.log()
       console.log(chalk.rgb(215, 119, 87)('◆ ') + payload.content + metaStr)
       console.log()
@@ -75,19 +77,25 @@ export class FallbackRenderer {
         info: chalk.blue('ℹ'),
       }
       const icon = icons[payload.status] || chalk.gray('·')
+      this.clearThinkingLine()
       console.log(`  ${icon} ${payload.toolName}: ${payload.description}`)
+      if (!this.isThinking) {
+        this.rl?.prompt()
+      }
     })
 
     this.bus.on('thinking_start', () => {
       this.isThinking = true
       this.thinkingStart = Date.now()
       this.thinkingTokenDelta = 0
+      // 换行后再显示思考动画，不覆盖 prompt 行
+      process.stdout.write('\n')
+      this.updateThinkingLine(0, 0)
       // 启动定时更新
       this.updateInterval = setInterval(() => {
         const elapsed = (Date.now() - this.thinkingStart) / 1000
         this.updateThinkingLine(elapsed, this.thinkingTokenDelta)
       }, 100)
-      process.stdout.write(chalk.gray(' ⋯ '))
     })
 
     this.bus.on('thinking_update', (payload: any) => {
@@ -101,8 +109,10 @@ export class FallbackRenderer {
         clearInterval(this.updateInterval)
         this.updateInterval = null
       }
+      this.clearThinkingLine()
       this.isThinking = false
-      process.stdout.write('\r' + ' '.repeat(50) + '\r')
+      // 思考结束恢复 prompt
+      this.rl?.prompt()
     })
 
     this.bus.on('confirmation_request', (payload) => {
@@ -116,6 +126,7 @@ export class FallbackRenderer {
         error: chalk.red,
       }
       const colorFn = colors[payload.level] || chalk.gray
+      this.clearThinkingLine()
       console.log(colorFn('ℹ ') + payload.content)
       if (!this.waitingConfirmation) {
         this.rl?.prompt()
@@ -179,6 +190,13 @@ export class FallbackRenderer {
     })
   }
 
+  private clearThinkingLine(): void {
+    if (this.thinkingLineLen > 0) {
+      process.stdout.write(`\r${' '.repeat(this.thinkingLineLen)}\r`)
+      this.thinkingLineLen = 0
+    }
+  }
+
   private updateThinkingLine(elapsed: number, tokenDelta: number): void {
     const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
     const frame = frames[Math.floor(elapsed * 10) % frames.length]
@@ -191,11 +209,13 @@ export class FallbackRenderer {
     }
     const statusText = parts.length > 0 ? `  ${parts.join(' | ')}` : ''
     const line = chalk.gray(` ${frame} 思考中...${statusText}`)
+    this.thinkingLineLen = line.length
     process.stdout.write(`\r${line}`)
   }
 
   private handleConfirmation(payload: ConfirmationRequestPayload): void {
     this.waitingConfirmation = true
+    this.clearThinkingLine()
     console.log()
     console.log(chalk.yellow('⚠ ') + payload.title)
     payload.options.forEach((opt, i) => {
