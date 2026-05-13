@@ -147,6 +147,9 @@ def handle_model_switch_direct(bridge: 'TuiBridge', agent: 'FileAgent', model_na
         })
     except Exception as e:
         bridge.send("error", {"content": f"创建 Provider 失败: {e}"})
+
+
+def handle_undo(bridge: 'TuiBridge', agent: 'FileAgent', count: int = 1) -> None:
     """撤销操作"""
     set_active_session(agent.session_id)
     result = undo_last(count=count)

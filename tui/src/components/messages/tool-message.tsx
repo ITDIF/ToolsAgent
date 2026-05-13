@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Box, Text } from 'ink'
 import type { Message } from '../../store/message-store.js'
 import { useTheme } from '../../theme/context.js'
@@ -6,6 +6,13 @@ import { useTheme } from '../../theme/context.js'
 export function ToolMessage({ message }: { message: Message }) {
   const { theme } = useTheme()
   const [expanded, setExpanded] = useState(false)
+
+  // 工具完成时自动展开，运行中保持折叠
+  useEffect(() => {
+    if (message.toolStatus === 'success' || message.toolStatus === 'error') {
+      setExpanded(true)
+    }
+  }, [message.toolStatus])
 
   const statusConfig: Record<string, { icon: string; color: string }> = {
     running: { icon: '⟳', color: theme.warning },

@@ -13,7 +13,14 @@
       "Bash(npx tsc *)",
       "Bash(ls -la src/)",
       "Bash(ls -la tests/)",
-      "Bash(echo \"Total source files: $\\(find src/ -name \"*.py\")"
+      "Bash(echo \"Total source files: $\\(find src/ -name \"*.py\")",
+      "Bash(patch src/core/agent.py -)",
+      "Bash(sed:*)",
+      "Bash(head -246 src/core/agent.py)",
+      "Bash(echo \"            current_tokens = {\\\\\"input\\\\\": 0, \\\\\"output\\\\\": 0, \\\\\"total\\\\\": 0}\")",
+      "Bash(echo \"            last_token_total = 0  # 记录上一次发送的 token 总数，用于计算增量\")",
+      "Bash(echo \"            first_update = True   # 首次发送使用预估的初始值\")",
+      "Bash(echo \"            estimated_display = estimated_input  # 用于即时显示\")"
     ]
   }
 }

@@ -69,7 +69,40 @@ class ClaudeProvider(BaseLLMProvider):
         system_prompt: Optional[str] = None,
         **kwargs: Any
     ) -> Dict[str, Any]:
-        return self.chat_with_tools_stream(messages, tools, system_prompt, **kwargs)
+        params = {
+            "model": self.model,
+            "messages": messages,
+            "tools": tools,
+            "max_tokens": LLMConstants.MAX_TOKENS,
+        }
+        if system_prompt:
+            params["system"] = system_prompt
+
+        response = self.client.messages.create(**params)
+
+        # 统计 token
+        if response.usage:
+            self._update_token_usage(
+                response.usage.input_tokens,
+                response.usage.output_tokens
+            )
+
+        result = {
+            "content": "",
+            "tool_calls": []
+        }
+
+        for block in response.content:
+            if block.type == "text":
+                result["content"] += block.text
+            elif block.type == "tool_use":
+                result["tool_calls"].append({
+                    "id": block.id,
+                    "name": block.name,
+                    "arguments": block.input
+                })
+
+        return result
 
     def chat_with_tools_stream(
         self,
@@ -95,36 +128,40 @@ class ClaudeProvider(BaseLLMProvider):
                 "tool_calls": []
             }
 
+            last_input_tokens = 0
+            last_output_tokens = 0
+            final_input_tokens = 0
+            final_output_tokens = 0
+
             for event in stream:
                 # 处理不同类型的事件
                 if hasattr(event, 'type'):
-                    if event.type == 'content_block_delta':
-                        # 内容增量事件，可以统计输出 token
-                        if hasattr(event, 'delta') and hasattr(event.delta, 'type'):
-                            if event.delta.type == 'text_delta' and update_tokens_callback:
-                                # 估计文本 token 数（大约每 4 字符 1 token）
-                                text = getattr(event.delta, 'text', '')
-                                if text:
-                                    estimated_tokens = len(text) // 4 + 1
-                                    update_tokens_callback(0, estimated_tokens)
-                    elif event.type == 'message_delta':
+                    if event.type == 'message_delta':
                         # 消息增量事件，包含 usage 信息
-                        if hasattr(event, 'usage') and event.usage and update_tokens_callback:
+                        if hasattr(event, 'usage') and event.usage:
+                            # 同时获取输入和输出 token
+                            if hasattr(event.usage, 'input_tokens'):
+                                final_input_tokens = event.usage.input_tokens
                             if hasattr(event.usage, 'output_tokens'):
-                                output_tokens = event.usage.output_tokens
-                                # 避免重复统计，使用差值
-                                if output_tokens > 0:
-                                    update_tokens_callback(0, output_tokens)
+                                final_output_tokens = event.usage.output_tokens
+
+                            if update_tokens_callback:
+                                # 使用差值更新
+                                input_delta = final_input_tokens - last_input_tokens
+                                output_delta = final_output_tokens - last_output_tokens
+                                if input_delta > 0 or output_delta > 0:
+                                    update_tokens_callback(input_delta, output_delta)
+                                last_input_tokens = final_input_tokens
+                                last_output_tokens = final_output_tokens
 
             # 获取完整响应以获取准确的 token 统计
             response = stream.get_final_message()
 
-        # 统计 token
-        if response.usage:
-            self._update_token_usage(
-                response.usage.input_tokens,
-                response.usage.output_tokens
-            )
+        # 流式结束时，使用最终的 token 数量更新统计
+        if update_tokens_callback and (last_input_tokens > 0 or last_output_tokens > 0):
+            self._update_token_usage(last_input_tokens, last_output_tokens)
+
+        # 直接使用 response.usage 的内容构建结果
 
         for block in response.content:
             if block.type == "text":
@@ -144,7 +181,24 @@ class ClaudeProvider(BaseLLMProvider):
         system_prompt: Optional[str] = None,
         **kwargs: Any
     ) -> Dict[str, Any]:
-        return self.chat_stream(messages, system_prompt, **kwargs)
+        params = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": LLMConstants.MAX_TOKENS,
+        }
+        if system_prompt:
+            params["system"] = system_prompt
+
+        response = self.client.messages.create(**params)
+
+        # 统计 token
+        if response.usage:
+            self._update_token_usage(
+                response.usage.input_tokens,
+                response.usage.output_tokens
+            )
+
+        return {"content": response.content[0].text if response.content else "", "reasoning_content": None}
 
     def chat_stream(
         self,
@@ -164,41 +218,44 @@ class ClaudeProvider(BaseLLMProvider):
         # 使用流式 API
         with self.client.messages.stream(**params) as stream:
             content = ""
+            last_input_tokens = 0
             last_output_tokens = 0
+            final_input_tokens = 0
+            final_output_tokens = 0
 
             for event in stream:
                 # 处理不同类型的事件
                 if hasattr(event, 'type'):
                     if event.type == 'content_block_delta':
-                        # 内容增量事件，可以统计输出 token
+                        # 收集文本内容
                         if hasattr(event, 'delta') and hasattr(event.delta, 'type'):
-                            if event.delta.type == 'text_delta' and update_tokens_callback:
-                                # 估计文本 token 数（大约每 4 字符 1 token）
+                            if event.delta.type == 'text_delta':
                                 text = getattr(event.delta, 'text', '')
-                                if text:
-                                    estimated_tokens = len(text) // 4 + 1
-                                    update_tokens_callback(0, estimated_tokens)
-                                    content += text
+                                content += text
                     elif event.type == 'message_delta':
                         # 消息增量事件，包含 usage 信息
-                        if hasattr(event, 'usage') and event.usage and update_tokens_callback:
+                        if hasattr(event, 'usage') and event.usage:
+                            # 同时获取输入和输出 token
+                            if hasattr(event.usage, 'input_tokens'):
+                                final_input_tokens = event.usage.input_tokens
                             if hasattr(event.usage, 'output_tokens'):
-                                output_tokens = event.usage.output_tokens
-                                # 避免重复统计，使用差值
-                                delta = output_tokens - last_output_tokens
-                                if delta > 0:
-                                    update_tokens_callback(0, delta)
-                                    last_output_tokens = output_tokens
+                                final_output_tokens = event.usage.output_tokens
+
+                            if update_tokens_callback:
+                                # 使用差值更新
+                                input_delta = final_input_tokens - last_input_tokens
+                                output_delta = final_output_tokens - last_output_tokens
+                                if input_delta > 0 or output_delta > 0:
+                                    update_tokens_callback(input_delta, output_delta)
+                                last_input_tokens = final_input_tokens
+                                last_output_tokens = final_output_tokens
 
             # 获取完整响应以获取准确的 token 统计
             response = stream.get_final_message()
 
-        # 统计 token
-        if response.usage:
-            self._update_token_usage(
-                response.usage.input_tokens,
-                response.usage.output_tokens
-            )
+        # 流式结束时，使用最终的 token 数量更新统计
+        if update_tokens_callback and (last_input_tokens > 0 or last_output_tokens > 0):
+            self._update_token_usage(last_input_tokens, last_output_tokens)
 
         final_content = response.content[0].text if response.content else content
         return {"content": final_content, "reasoning_content": None}

@@ -26,6 +26,22 @@ export class FallbackRenderer {
     this.client = client
   }
 
+  /** 暂停 readline 并清除当前行的 prompt */
+  private pausePrompt(): void {
+    if (!this.rl) return
+    // 先清除 readline 当前行的内容（包括 prompt）
+    this.rl.pause()
+    // 清除当前行
+    stdout.write('\r\x1b[2K')
+  }
+
+  /** 恢复 readline 并重新显示 prompt */
+  private resumePrompt(): void {
+    if (!this.rl) return
+    this.rl.resume()
+    this.rl.prompt(true)
+  }
+
   start(): void {
     this.rl = readline.createInterface({
       input: stdin,
@@ -63,10 +79,11 @@ export class FallbackRenderer {
       const metaStr = meta.length ? chalk.gray(` [${meta.join(' | ')}]`) : ''
 
       this.clearThinkingLine()
+      this.pausePrompt()
       console.log()
       console.log(chalk.rgb(215, 119, 87)('◆ ') + payload.content + metaStr)
       console.log()
-      this.rl?.prompt()
+      this.resumePrompt()
     })
 
     this.bus.on('tool_status', (payload) => {
@@ -78,9 +95,10 @@ export class FallbackRenderer {
       }
       const icon = icons[payload.status] || chalk.gray('·')
       this.clearThinkingLine()
+      this.pausePrompt()
       console.log(`  ${icon} ${payload.toolName}: ${payload.description}`)
       if (!this.isThinking) {
-        this.rl?.prompt()
+        this.resumePrompt()
       }
     })
 
@@ -93,8 +111,8 @@ export class FallbackRenderer {
       this.isThinking = true
       this.thinkingStart = Date.now()
       this.thinkingTokenDelta = 0
-      // 换行后再显示思考动画，不覆盖 prompt 行
-      process.stdout.write('\n')
+      // 暂停 readline，清除 prompt，在独立行显示思考动画
+      this.pausePrompt()
       this.updateThinkingLine(0, 0)
       // 启动定时更新
       this.updateInterval = setInterval(() => {
@@ -123,7 +141,7 @@ export class FallbackRenderer {
           parts.push(`+${tokenUsage.total}t`)
         }
         const summary = parts.join(' | ')
-        process.stdout.write(`\r${' '.repeat(this.thinkingLineLen)}\r`)
+        stdout.write(`\r${' '.repeat(this.thinkingLineLen)}\r`)
         console.log(chalk.gray(`  ✓ 思考完成 ${summary}`))
         this.thinkingLineLen = 0
       } else {
@@ -145,24 +163,30 @@ export class FallbackRenderer {
       }
       const colorFn = colors[payload.level] || chalk.gray
       this.clearThinkingLine()
+      this.pausePrompt()
       console.log(colorFn('ℹ ') + payload.content)
       if (!this.waitingConfirmation) {
-        this.rl?.prompt()
+        this.resumePrompt()
       }
     })
 
     this.bus.on('model_update', (payload) => {
+      this.pausePrompt()
       console.log(chalk.cyan(`🔄 模型切换: ${payload.model}`))
+      this.resumePrompt()
     })
 
     this.bus.on('error', (payload) => {
+      this.clearThinkingLine()
+      this.pausePrompt()
       console.log(chalk.red('✗ ') + payload.content)
       if (!this.waitingConfirmation) {
-        this.rl?.prompt()
+        this.resumePrompt()
       }
     })
 
     this.bus.on('undo_result', (payload) => {
+      this.pausePrompt()
       if (payload.success) {
         for (const r of payload.results || []) {
           if (r.success) {
@@ -175,10 +199,13 @@ export class FallbackRenderer {
       } else {
         console.log(chalk.red('✗ 撤销失败: ') + (payload.error || '未知错误'))
       }
+      this.resumePrompt()
     })
 
     this.bus.on('session_info', (payload) => {
+      this.pausePrompt()
       console.log(chalk.blue(`📋 会话: ${payload.sessionId} (${payload.messageCount} 条消息)`))
+      this.resumePrompt()
     })
 
     this.bus.on('exit', () => {
@@ -210,7 +237,7 @@ export class FallbackRenderer {
 
   private clearThinkingLine(): void {
     if (this.thinkingLineLen > 0) {
-      process.stdout.write(`\r${' '.repeat(this.thinkingLineLen)}\r`)
+      stdout.write(`\r${' '.repeat(this.thinkingLineLen)}\r`)
       this.thinkingLineLen = 0
     }
   }
@@ -228,12 +255,13 @@ export class FallbackRenderer {
     const statusText = parts.length > 0 ? `  ${parts.join(' | ')}` : ''
     const line = chalk.gray(` ${frame} 思考中...${statusText}`)
     this.thinkingLineLen = line.length
-    process.stdout.write(`\r${line}`)
+    stdout.write(`\r${line}`)
   }
 
   private handleConfirmation(payload: ConfirmationRequestPayload): void {
     this.waitingConfirmation = true
     this.clearThinkingLine()
+    this.pausePrompt()
     console.log()
     console.log(chalk.yellow('⚠ ') + payload.title)
     payload.options.forEach((opt, i) => {
@@ -260,7 +288,7 @@ export class FallbackRenderer {
           this.client.sendConfirmationResponse(payload.requestId, payload.default ?? 0)
         }
       }
-      this.rl?.prompt()
+      this.resumePrompt()
     })
   }
 }

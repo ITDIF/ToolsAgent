@@ -242,27 +242,39 @@ class FileAgent:
 
             stop_update = threading.Event()
 
-            # 用于实时 token 统计
-            current_tokens = {"input": estimated_input, "output": 0, "total": estimated_input}
+            # 用于实时 token 统计（初始化为 0，预估值只用于即时显示）
+            current_tokens = {"input": 0, "output": 0, "total": 0}
+            last_token_total = 0  # 记录上一次发送的 token 总数，用于计算增量
+            first_update = True   # 首次发送使用预估的初始值
+            estimated_display = estimated_input  # 用于即时显示
 
             def _send_updates():
+                nonlocal last_token_total, first_update
                 while not stop_update.is_set():
                     elapsed = time.time() - iter_start
-                    # 使用实时累积的 token 数
-                    token_delta = current_tokens["total"]
-                    self.thinking_callback("update", elapsed, token_delta)
+                    # 使用实时累积的 token 数，如果累积为 0 则显示预估
+                    if first_update and current_tokens["total"] == 0:
+                        # 首次发送使用预估的初始值
+                        token_to_send = estimated_display
+                    else:
+                        # 计算自上次发送以来的增量
+                        current_total = current_tokens["total"] if current_tokens["total"] > 0 else 0
+                        token_to_send = current_total - last_token_total
+                        
+                    self.thinking_callback("update", elapsed, token_to_send)
+                    last_token_total = current_tokens["total"]
+                    first_update = False
                     if stop_update.wait(0.1):
                         break
 
             update_thread = threading.Thread(target=_send_updates, daemon=True)
             update_thread.start()
 
-            # 流式调用并实时统计 token（只统计输出 token）
+            # 流式调用并实时统计 token（仅用于显示，不累加到 provider）
             def update_tokens_callback(input_tokens, output_tokens):
+                current_tokens["input"] += input_tokens
                 current_tokens["output"] += output_tokens
-                current_tokens["total"] += output_tokens
-                # 同时更新 provider 的 token 统计
-                self.llm._update_token_usage(input_tokens, output_tokens)
+                current_tokens["total"] += input_tokens + output_tokens
 
             try:
                 # 检查 provider 是否支持流式调用
@@ -295,14 +307,25 @@ class FileAgent:
                 update_thread.join(timeout=0.5)
 
             elapsed = time.time() - iter_start
-            after_usage = self.get_token_usage()
-            # 使用 provider 的准确 token 统计
+            after_llm_usage = self.llm.get_token_usage()
+            # 计算本次迭代的实际 token 增量
+            # 使用流式过程中累积的 token（更准确），因为流式 API 可能多次返回相同的 token 数
             token_usage = {
-                "input": after_usage["input"] - before_usage["input"],
-                "output": after_usage["output"] - before_usage["output"],
-                "total": after_usage["total"] - before_usage["total"],
+                "input": current_tokens["input"],
+                "output": current_tokens["output"],
+                "total": current_tokens["total"],
             }
+            # 如果流式过程中没有统计到 token（如 API 不支持 usage），则使用 LLM provider 的统计
+            if token_usage["total"] == 0 and after_llm_usage["total"] > 0:
+                token_usage = {
+                    "input": after_llm_usage["input"] - before_usage["input"],
+                    "output": after_llm_usage["output"] - before_usage["output"],
+                    "total": after_llm_usage["total"] - before_usage["total"],
+                }
             self.thinking_callback("end", elapsed, token_usage)
+
+            # 重置 LLM provider 的 token 统计，避免累积到下一次调用
+            self.llm.reset_token_usage()
         else:
             # CLI 模式：终端动画
             stop_event = threading.Event()
