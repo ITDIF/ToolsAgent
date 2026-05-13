@@ -21,7 +21,7 @@ class MockProvider(BaseLLMProvider):
         return resp
 
     def chat(self, messages, system_prompt=None, **kwargs):
-        return self.final_chat
+        return {"content": self.final_chat, "reasoning_content": None}
 
 
 class TestProcessSingleTurn:

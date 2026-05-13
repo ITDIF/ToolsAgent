@@ -85,6 +85,11 @@ export class FallbackRenderer {
     })
 
     this.bus.on('thinking_start', () => {
+      // 如果上一轮思考还没结束（不应该发生），先清理
+      if (this.updateInterval) {
+        clearInterval(this.updateInterval)
+        this.updateInterval = null
+      }
       this.isThinking = true
       this.thinkingStart = Date.now()
       this.thinkingTokenDelta = 0
@@ -104,15 +109,28 @@ export class FallbackRenderer {
       this.updateThinkingLine(elapsed, this.thinkingTokenDelta)
     })
 
-    this.bus.on('thinking_end', () => {
+    this.bus.on('thinking_end', (payload: any) => {
       if (this.updateInterval) {
         clearInterval(this.updateInterval)
         this.updateInterval = null
       }
-      this.clearThinkingLine()
+      // 显示本轮思考的最终统计，然后清除
+      if (payload) {
+        const elapsed = payload.elapsed || (Date.now() - this.thinkingStart) / 1000
+        const tokenUsage = payload.tokenUsage
+        const parts = [`${elapsed.toFixed(1)}s`]
+        if (tokenUsage?.total > 0) {
+          parts.push(`+${tokenUsage.total}t`)
+        }
+        const summary = parts.join(' | ')
+        process.stdout.write(`\r${' '.repeat(this.thinkingLineLen)}\r`)
+        console.log(chalk.gray(`  ✓ 思考完成 ${summary}`))
+        this.thinkingLineLen = 0
+      } else {
+        this.clearThinkingLine()
+      }
       this.isThinking = false
-      // 思考结束恢复 prompt
-      this.rl?.prompt()
+      // 不立即恢复 prompt，等 tool_status 或 assistant_msg 再显示
     })
 
     this.bus.on('confirmation_request', (payload) => {

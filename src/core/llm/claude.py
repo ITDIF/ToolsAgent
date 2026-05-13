@@ -109,7 +109,7 @@ class ClaudeProvider(BaseLLMProvider):
         messages: List[Dict[str, Any]],
         system_prompt: Optional[str] = None,
         **kwargs: Any
-    ) -> str:
+    ) -> Dict[str, Any]:
         params = {
             "model": self.model,
             "messages": messages,
@@ -127,4 +127,4 @@ class ClaudeProvider(BaseLLMProvider):
                 response.usage.output_tokens
             )
 
-        return response.content[0].text if response.content else ""
+        return {"content": response.content[0].text if response.content else "", "reasoning_content": None}

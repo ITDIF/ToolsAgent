@@ -37,17 +37,20 @@ class BaseLLMProvider(ABC):
         self.token_usage["output"] += output_tokens
         self.token_usage["total"] += input_tokens + output_tokens
 
-    def build_assistant_message(self, content: Optional[str], tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def build_assistant_message(self, content: Optional[str], tool_calls: List[Dict[str, Any]], reasoning_content: Optional[str] = None) -> List[Dict[str, Any]]:
         """构造一轮 assistant 消息(默认 OpenAI 风格)。返回应 extend 到对话历史的消息列表。
 
         Args:
             content: 助手回复内容
             tool_calls: 工具调用列表
+            reasoning_content: 思考模式模型的推理内容（如 MIMO）
 
         Returns:
             消息列表
         """
         msg = {"role": "assistant", "content": content or None}
+        if reasoning_content:
+            msg["reasoning_content"] = reasoning_content
         if tool_calls:
             msg["tool_calls"] = [
                 {
@@ -112,7 +115,7 @@ class BaseLLMProvider(ABC):
             messages: List[Dict[str, Any]],
             system_prompt: Optional[str] = None,
             **kwargs: Any
-    ) -> str:
+    ) -> Dict[str, Any]:
         """
         普通对话，不使用工具
 
@@ -122,7 +125,7 @@ class BaseLLMProvider(ABC):
             **kwargs: 其他参数
 
         Returns:
-            回复内容字符串
+            {"content": str, "reasoning_content": Optional[str]}
         """
         pass
 
@@ -178,6 +181,11 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         choice = response.choices[0]
         result = {"content": choice.message.content or "", "tool_calls": []}
 
+        # 保留 reasoning_content（思考模式模型如 MIMO 需要传回此字段）
+        reasoning = getattr(choice.message, 'reasoning_content', None)
+        if reasoning:
+            result["reasoning_content"] = reasoning
+
         if choice.message.tool_calls:
             for tc in choice.message.tool_calls:
                 result["tool_calls"].append({
@@ -212,4 +220,8 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 response.usage.completion_tokens
             )
 
-        return response.choices[0].message.content
+        # 保留 reasoning_content（思考模式模型如 MIMO 需要传回此字段）
+        message = response.choices[0].message
+        reasoning = getattr(message, 'reasoning_content', None)
+
+        return {"content": message.content, "reasoning_content": reasoning}

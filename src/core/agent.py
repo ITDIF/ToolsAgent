@@ -31,7 +31,7 @@ SYSTEM_PROMPT = """你是一个本地文件操作助手，可以帮助用户管�
 执行删除、覆盖等危险操作前，请先确认用户意图。"""
 class FileAgent:
     """文件操作代理"""
-    def __init__(self, llm_provider, session_id=None, interactive=True, tool_status_callback=None, confirm_callback=None):
+    def __init__(self, llm_provider, session_id=None, interactive=True, tool_status_callback=None, confirm_callback=None, thinking_callback=None):
         self.llm = llm_provider
         self.messages = []
         self.total_tokens = {"input": 0, "output": 0, "total": 0}
@@ -39,6 +39,7 @@ class FileAgent:
         self.interactive = interactive
         self.tool_status_callback = tool_status_callback
         self.confirm_callback = confirm_callback  # 工具状态回调函数，用于TUI模式显示执行状态
+        self.thinking_callback = thinking_callback  # 思考状态回调，用于TUI模式显示实时token变化
         # 本次进程生命周期内已被\"会话级\"授权的工具类型集合
         # 切换 session_id / 模型时不清空，仅在进程退出时丢失
         self.session_authorized_tools: set[str] = set()
@@ -218,27 +219,71 @@ class FileAgent:
     def _run_with_animation(self, llm_call, is_chat=False):
         """带思考动画执行 LLM 调用，返回 (response, delta, iter_elapsed)"""
         iter_start = time.time()
-        stop_event = threading.Event()
-        anim_thread = None
-        if self.interactive:
-            anim_thread = threading.Thread(target=_thinking_animation, args=(stop_event,))
-            anim_thread.start()
-        try:
-            if is_chat:
-                response = self.llm.chat(messages=self.messages, system_prompt=SYSTEM_PROMPT)
-            else:
-                response = self.llm.chat_with_tools(
-                    messages=self.messages,
-                    tools=TOOL_SCHEMAS,
-                    system_prompt=SYSTEM_PROMPT,
-                )
-        finally:
-            stop_event.set()
-            if anim_thread is not None:
-                anim_thread.join()
+        before_usage = self.get_token_usage()
+
+        if self.thinking_callback:
+            # TUI 模式：通过回调发送思考状态
+            self.thinking_callback("start")
+            stop_update = threading.Event()
+
+            def _send_updates():
+                while not stop_update.is_set():
+                    elapsed = time.time() - iter_start
+                    current_usage = self.get_token_usage()
+                    token_delta = current_usage["total"] - before_usage["total"]
+                    self.thinking_callback("update", elapsed, token_delta)
+                    if stop_update.wait(0.1):
+                        break
+
+            update_thread = threading.Thread(target=_send_updates, daemon=True)
+            update_thread.start()
+            try:
+                if is_chat:
+                    chat_result = self.llm.chat(messages=self.messages, system_prompt=SYSTEM_PROMPT)
+                    response = {"content": chat_result["content"], "tool_calls": [], "reasoning_content": chat_result.get("reasoning_content")}
+                else:
+                    response = self.llm.chat_with_tools(
+                        messages=self.messages,
+                        tools=TOOL_SCHEMAS,
+                        system_prompt=SYSTEM_PROMPT,
+                    )
+            finally:
+                stop_update.set()
+                update_thread.join(timeout=0.5)
+
+            elapsed = time.time() - iter_start
+            after_usage = self.get_token_usage()
+            token_usage = {
+                "input": after_usage["input"] - before_usage["input"],
+                "output": after_usage["output"] - before_usage["output"],
+                "total": after_usage["total"] - before_usage["total"],
+            }
+            self.thinking_callback("end", elapsed, token_usage)
+        else:
+            # CLI 模式：终端动画
+            stop_event = threading.Event()
+            anim_thread = None
+            if self.interactive:
+                anim_thread = threading.Thread(target=_thinking_animation, args=(stop_event,))
+                anim_thread.start()
+            try:
+                if is_chat:
+                    chat_result = self.llm.chat(messages=self.messages, system_prompt=SYSTEM_PROMPT)
+                    response = {"content": chat_result["content"], "tool_calls": [], "reasoning_content": chat_result.get("reasoning_content")}
+                else:
+                    response = self.llm.chat_with_tools(
+                        messages=self.messages,
+                        tools=TOOL_SCHEMAS,
+                        system_prompt=SYSTEM_PROMPT,
+                    )
+            finally:
+                stop_event.set()
+                if anim_thread is not None:
+                    anim_thread.join()
+
         delta = self._update_total_tokens()
         iter_elapsed = time.time() - iter_start
-        if self.interactive and delta["total"] > 0:
+        if not self.thinking_callback and self.interactive and delta["total"] > 0:
             print(f"\033[90m  [{iter_elapsed:.2f}s | +{delta['total']}t]\033[0m")
         return response, delta, iter_elapsed
 
@@ -263,13 +308,18 @@ class FileAgent:
                 return final
             executed = self._handle_tool_calls(response["tool_calls"], confirm_required, confirmed_operations)
             self.messages.extend(
-                self.llm.build_assistant_message(response["content"], response["tool_calls"])
+                self.llm.build_assistant_message(response["content"], response["tool_calls"], response.get("reasoning_content"))
             )
             self.messages.extend(self.llm.build_tool_result_messages(executed))
         # 达到最大迭代次数仍未结束
         final_response, _, _ = self._run_with_animation(None, is_chat=True)
-        self.messages.append({"role": "assistant", "content": final_response})
-        return final_response
+        final_content = final_response["content"] or ""
+        reasoning = final_response.get("reasoning_content")
+        msg = {"role": "assistant", "content": final_content}
+        if reasoning:
+            msg["reasoning_content"] = reasoning
+        self.messages.append(msg)
+        return final_content
     def _format_tool_call(self, tool_name, args):
         """格式化工具调用描述"""
         if tool_name == ToolNames.UNDO_LAST:
