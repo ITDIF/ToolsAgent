@@ -222,37 +222,81 @@ class FileAgent:
         before_usage = self.get_token_usage()
 
         if self.thinking_callback:
-            # TUI 模式：通过回调发送思考状态
+            # 预估输入 token（按字符数简单估算，大约每 4 字符 1 token）
+            def estimate_input_tokens():
+                text = SYSTEM_PROMPT or ""
+                for msg in self.messages:
+                    if isinstance(msg, dict):
+                        text += str(msg.get("content", ""))
+                # 简单估算：中文字符 1:1，英文字符 4:1
+                chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+                other_chars = len(text) - chinese_chars
+                return chinese_chars + (other_chars // 4)
+
+            # 先发送思考开始信号
             self.thinking_callback("start")
+
+            # 立即发送一次更新，显示预估的输入 token
+            estimated_input = estimate_input_tokens()
+            self.thinking_callback("update", 0.0, estimated_input)
+
             stop_update = threading.Event()
+
+            # 用于实时 token 统计
+            current_tokens = {"input": estimated_input, "output": 0, "total": estimated_input}
 
             def _send_updates():
                 while not stop_update.is_set():
                     elapsed = time.time() - iter_start
-                    current_usage = self.get_token_usage()
-                    token_delta = current_usage["total"] - before_usage["total"]
+                    # 使用实时累积的 token 数
+                    token_delta = current_tokens["total"]
                     self.thinking_callback("update", elapsed, token_delta)
                     if stop_update.wait(0.1):
                         break
 
             update_thread = threading.Thread(target=_send_updates, daemon=True)
             update_thread.start()
+
+            # 流式调用并实时统计 token（只统计输出 token）
+            def update_tokens_callback(input_tokens, output_tokens):
+                current_tokens["output"] += output_tokens
+                current_tokens["total"] += output_tokens
+                # 同时更新 provider 的 token 统计
+                self.llm._update_token_usage(input_tokens, output_tokens)
+
             try:
-                if is_chat:
-                    chat_result = self.llm.chat(messages=self.messages, system_prompt=SYSTEM_PROMPT)
-                    response = {"content": chat_result["content"], "tool_calls": [], "reasoning_content": chat_result.get("reasoning_content")}
-                else:
-                    response = self.llm.chat_with_tools(
+                # 检查 provider 是否支持流式调用
+                if hasattr(self.llm, 'chat_with_tools_stream'):
+                    response = self.llm.chat_with_tools_stream(
                         messages=self.messages,
                         tools=TOOL_SCHEMAS,
                         system_prompt=SYSTEM_PROMPT,
+                        update_tokens_callback=update_tokens_callback,
                     )
+                elif hasattr(self.llm, 'chat_stream'):
+                    response = self.llm.chat_stream(
+                        messages=self.messages,
+                        system_prompt=SYSTEM_PROMPT,
+                        update_tokens_callback=update_tokens_callback,
+                    )
+                else:
+                    # 回退到非流式调用
+                    if is_chat:
+                        chat_result = self.llm.chat(messages=self.messages, system_prompt=SYSTEM_PROMPT)
+                        response = {"content": chat_result["content"], "tool_calls": [], "reasoning_content": chat_result.get("reasoning_content")}
+                    else:
+                        response = self.llm.chat_with_tools(
+                            messages=self.messages,
+                            tools=TOOL_SCHEMAS,
+                            system_prompt=SYSTEM_PROMPT,
+                        )
             finally:
                 stop_update.set()
                 update_thread.join(timeout=0.5)
 
             elapsed = time.time() - iter_start
             after_usage = self.get_token_usage()
+            # 使用 provider 的准确 token 统计
             token_usage = {
                 "input": after_usage["input"] - before_usage["input"],
                 "output": after_usage["output"] - before_usage["output"],

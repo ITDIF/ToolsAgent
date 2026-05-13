@@ -109,6 +109,33 @@ class BaseLLMProvider(ABC):
         """
         pass
 
+    def chat_with_tools_stream(
+            self,
+            messages: List[Dict[str, Any]],
+            tools: List[Dict[str, Any]],
+            system_prompt: Optional[str] = None,
+            update_tokens_callback: Optional[Any] = None,
+            **kwargs: Any
+    ) -> Dict[str, Any]:
+        """
+        流式调用 chat_with_tools，实时更新 token 统计（可选实现）
+
+        Args:
+            messages: 对话历史
+            tools: 工具定义列表
+            system_prompt: 系统提示词
+            update_tokens_callback: token 更新回调函数 callback(input_tokens, output_tokens)
+            **kwargs: 其他参数
+
+        Returns:
+            {
+                "content": "回复内容",
+                "tool_calls": [{"name": "...", "arguments": {...}}]
+            }
+        """
+        # 默认回退到非流式调用
+        return self.chat_with_tools(messages, tools, system_prompt, **kwargs)
+
     @abstractmethod
     def chat(
             self,
@@ -127,6 +154,28 @@ class BaseLLMProvider(ABC):
         Returns:
             {"content": str, "reasoning_content": Optional[str]}
         """
+
+    def chat_stream(
+            self,
+            messages: List[Dict[str, Any]],
+            system_prompt: Optional[str] = None,
+            update_tokens_callback: Optional[Any] = None,
+            **kwargs: Any
+    ) -> Dict[str, Any]:
+        """
+        流式调用 chat，实时更新 token 统计（可选实现）
+
+        Args:
+            messages: 对话历史
+            system_prompt: 系统提示词
+            update_tokens_callback: token 更新回调函数 callback(input_tokens, output_tokens)
+            **kwargs: 其他参数
+
+        Returns:
+            {"content": str, "reasoning_content": Optional[str]}
+        """
+        # 默认回退到非流式调用
+        return self.chat(messages, system_prompt, **kwargs)
         pass
 
 
@@ -147,6 +196,16 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             system_prompt: Optional[str] = None,
             **kwargs: Any
     ) -> Dict[str, Any]:
+        return self.chat_with_tools_stream(messages, tools, system_prompt, **kwargs)
+
+    def chat_with_tools_stream(
+            self,
+            messages: List[Dict[str, Any]],
+            tools: List[Dict[str, Any]],
+            system_prompt: Optional[str] = None,
+            update_tokens_callback: Optional[Any] = None,
+            **kwargs: Any
+    ) -> Dict[str, Any]:
         openai_tools = [
             {
                 "type": "function",
@@ -164,6 +223,69 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             final_messages.append({"role": "system", "content": system_prompt})
         final_messages.extend(messages)
 
+        # 使用流式 API
+        stream = self.client.chat.completions.create(
+            model=self.model,
+            messages=final_messages,
+            tools=openai_tools if openai_tools else None,
+            stream=True,
+            **kwargs
+        )
+
+        result = {"content": "", "tool_calls": []}
+        current_tool_calls = {}  # id -> {name, arguments}
+        last_output_tokens = 0
+
+        for chunk in stream:
+            if hasattr(chunk, 'usage') and chunk.usage:
+                if update_tokens_callback and chunk.usage.completion_tokens > last_output_tokens:
+                    delta = chunk.usage.completion_tokens - last_output_tokens
+                    update_tokens_callback(0, delta)
+                    last_output_tokens = chunk.usage.completion_tokens
+
+            if not chunk.choices:
+                continue
+
+            delta = chunk.choices[0].delta
+
+            # 处理文本内容
+            if hasattr(delta, 'content') and delta.content:
+                result["content"] += delta.content
+                if update_tokens_callback:
+                    # 估计文本 token 数（大约每 4 字符 1 token）
+                    estimated_tokens = len(delta.content) // 4 + 1
+                    update_tokens_callback(0, estimated_tokens)
+
+            # 保留 reasoning_content（思考模式模型如 MIMO 需要传回此字段）
+            if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                result["reasoning_content"] = delta.reasoning_content
+                if update_tokens_callback:
+                    # 估计 reasoning token 数
+                    estimated_tokens = len(delta.reasoning_content) // 4 + 1
+                    update_tokens_callback(0, estimated_tokens)
+
+            # 处理工具调用
+            if hasattr(delta, 'tool_calls') and delta.tool_calls:
+                for tc in delta.tool_calls:
+                    tc_id = tc.id
+                    if tc_id not in current_tool_calls:
+                        current_tool_calls[tc_id] = {"id": tc_id, "name": None, "arguments": ""}
+
+                    if hasattr(tc, 'function'):
+                        if hasattr(tc.function, 'name') and tc.function.name:
+                            current_tool_calls[tc_id]["name"] = tc.function.name
+                        if hasattr(tc.function, 'arguments') and tc.function.arguments:
+                            current_tool_calls[tc_id]["arguments"] += tc.function.arguments
+
+        # 构建最终的工具调用列表
+        for tc in current_tool_calls.values():
+            result["tool_calls"].append({
+                "id": tc["id"],
+                "name": tc["name"],
+                "arguments": json.loads(tc["arguments"]) if tc["arguments"] else {}
+            })
+
+        # 重新调用一次非流式获取准确的 token 统计
         response = self.client.chat.completions.create(
             model=self.model,
             messages=final_messages,
@@ -178,22 +300,6 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 response.usage.completion_tokens
             )
 
-        choice = response.choices[0]
-        result = {"content": choice.message.content or "", "tool_calls": []}
-
-        # 保留 reasoning_content（思考模式模型如 MIMO 需要传回此字段）
-        reasoning = getattr(choice.message, 'reasoning_content', None)
-        if reasoning:
-            result["reasoning_content"] = reasoning
-
-        if choice.message.tool_calls:
-            for tc in choice.message.tool_calls:
-                result["tool_calls"].append({
-                    "id": tc.id,
-                    "name": tc.function.name,
-                    "arguments": json.loads(tc.function.arguments)
-                })
-
         return result
 
     def chat(
@@ -202,11 +308,61 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             system_prompt: Optional[str] = None,
             **kwargs: Any
     ) -> str:
+        return self.chat_stream(messages, system_prompt, **kwargs)
+
+    def chat_stream(
+            self,
+            messages: List[Dict[str, Any]],
+            system_prompt: Optional[str] = None,
+            update_tokens_callback: Optional[Any] = None,
+            **kwargs: Any
+    ) -> Dict[str, Any]:
         final_messages: List[Dict[str, Any]] = []
         if system_prompt:
             final_messages.append({"role": "system", "content": system_prompt})
         final_messages.extend(messages)
 
+        # 使用流式 API
+        stream = self.client.chat.completions.create(
+            model=self.model,
+            messages=final_messages,
+            stream=True,
+            **kwargs
+        )
+
+        content = ""
+        reasoning_content = None
+        last_output_tokens = 0
+
+        for chunk in stream:
+            if hasattr(chunk, 'usage') and chunk.usage:
+                if update_tokens_callback and chunk.usage.completion_tokens > last_output_tokens:
+                    delta = chunk.usage.completion_tokens - last_output_tokens
+                    update_tokens_callback(0, delta)
+                    last_output_tokens = chunk.usage.completion_tokens
+
+            if not chunk.choices:
+                continue
+
+            delta = chunk.choices[0].delta
+
+            # 处理文本内容
+            if hasattr(delta, 'content') and delta.content:
+                content += delta.content
+                if update_tokens_callback:
+                    # 估计文本 token 数（大约每 4 字符 1 token）
+                    estimated_tokens = len(delta.content) // 4 + 1
+                    update_tokens_callback(0, estimated_tokens)
+
+            # 保留 reasoning_content（思考模式模型如 MIMO 需要传回此字段）
+            if hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                reasoning_content = delta.reasoning_content
+                if update_tokens_callback:
+                    # 估计 reasoning token 数
+                    estimated_tokens = len(delta.reasoning_content) // 4 + 1
+                    update_tokens_callback(0, estimated_tokens)
+
+        # 重新调用一次非流式获取准确的 token 统计
         response = self.client.chat.completions.create(
             model=self.model,
             messages=final_messages,
@@ -220,8 +376,4 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 response.usage.completion_tokens
             )
 
-        # 保留 reasoning_content（思考模式模型如 MIMO 需要传回此字段）
-        message = response.choices[0].message
-        reasoning = getattr(message, 'reasoning_content', None)
-
-        return {"content": message.content, "reasoning_content": reasoning}
+        return {"content": content, "reasoning_content": reasoning_content}
