@@ -129,6 +129,9 @@ export class TuiClient {
       case 'thinking_start':
         this.bus.emit('thinking_start')
         break
+      case 'thinking_update':
+        this.bus.emit('thinking_update', payload as any)
+        break
       case 'thinking_end':
         this.bus.emit('thinking_end', payload as any)
         break
@@ -149,6 +152,10 @@ export class TuiClient {
         break
       case 'session_info':
         this.bus.emit('session_info', payload as any)
+        break
+      case 'exit':
+        this.bus.emit('exit')
+        process.exit(0)
         break
       default:
         break

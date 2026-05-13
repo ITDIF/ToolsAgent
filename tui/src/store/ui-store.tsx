@@ -8,6 +8,8 @@ export interface UiState {
   model: string
   sessionId: string
   isThinking: boolean
+  thinkingElapsed: number
+  thinkingTokenDelta: number
   pendingConfirmation: ConfirmationRequestPayload | null
   themeName: string
   terminalMode: 'full' | 'fallback'
@@ -19,6 +21,8 @@ const initialUiState: UiState = {
   model: '',
   sessionId: '',
   isThinking: false,
+  thinkingElapsed: 0,
+  thinkingTokenDelta: 0,
   pendingConfirmation: null,
   themeName: 'dark',
   terminalMode: 'full',
@@ -30,6 +34,7 @@ export type UiAction =
   | { type: 'SET_MODEL'; model: string }
   | { type: 'SET_SESSION'; sessionId: string }
   | { type: 'SET_THINKING'; isThinking: boolean }
+  | { type: 'UPDATE_THINKING'; elapsed: number; tokenDelta: number }
   | { type: 'SET_CONFIRMATION'; payload: ConfirmationRequestPayload | null }
   | { type: 'SET_THEME'; themeName: string }
   | { type: 'SET_TERMINAL_MODE'; mode: 'full' | 'fallback' }
@@ -44,7 +49,9 @@ function uiReducer(state: UiState, action: UiAction): UiState {
     case 'SET_SESSION':
       return { ...state, sessionId: action.sessionId }
     case 'SET_THINKING':
-      return { ...state, isThinking: action.isThinking }
+      return { ...state, isThinking: action.isThinking, thinkingElapsed: 0, thinkingTokenDelta: 0 }
+    case 'UPDATE_THINKING':
+      return { ...state, thinkingElapsed: action.elapsed, thinkingTokenDelta: action.tokenDelta }
     case 'SET_CONFIRMATION':
       return { ...state, pendingConfirmation: action.payload }
     case 'SET_THEME':

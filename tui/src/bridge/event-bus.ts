@@ -3,6 +3,7 @@ import type {
   ReadyPayload,
   AssistantMsgPayload,
   ToolStatusPayload,
+  ThinkingUpdatePayload,
   ThinkingEndPayload,
   ConfirmationRequestPayload,
   SystemNotifyPayload,
@@ -21,6 +22,7 @@ export interface EventMap {
   assistant_msg: [payload: AssistantMsgPayload]
   tool_status: [payload: ToolStatusPayload]
   thinking_start: []
+  thinking_update: [payload: ThinkingUpdatePayload]
   thinking_end: [payload: ThinkingEndPayload]
   confirmation_request: [payload: ConfirmationRequestPayload]
   system_notify: [payload: SystemNotifyPayload]
@@ -28,6 +30,7 @@ export interface EventMap {
   error: [payload: ErrorPayload]
   undo_result: [payload: UndoResultPayload]
   session_info: [payload: SessionInfoPayload]
+  exit: []
 }
 
 export type EventKey = keyof EventMap

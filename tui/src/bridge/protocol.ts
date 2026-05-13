@@ -6,6 +6,7 @@ export type ServerMessageType =
   | 'assistant_msg'
   | 'tool_status'
   | 'thinking_start'
+  | 'thinking_update'
   | 'thinking_end'
   | 'confirmation_request'
   | 'system_notify'
@@ -13,6 +14,7 @@ export type ServerMessageType =
   | 'error'
   | 'undo_result'
   | 'session_info'
+  | 'exit'
 
 export type ClientMessageType =
   | 'user_input'
@@ -43,6 +45,11 @@ export interface ToolStatusPayload {
   parameters?: Record<string, unknown>
   result?: Record<string, unknown>
   error?: string
+}
+
+export interface ThinkingUpdatePayload {
+  elapsed: number
+  tokenDelta: number
 }
 
 export interface ThinkingEndPayload {

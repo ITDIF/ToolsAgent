@@ -109,6 +109,24 @@ class TuiBridge:
             except Exception as e:
                 logger.error(f"发送消息给TUI失败: {e}")
 
+    def send_thinking_update(self, elapsed: float, token_delta: int) -> None:
+        """发送思考状态更新（时间、token变化）"""
+        self.send("thinking_update", {
+            "elapsed": elapsed,
+            "tokenDelta": token_delta,
+        })
+
+    def send_thinking_start(self) -> None:
+        """发送思考开始信号"""
+        self.send("thinking_start", {})
+
+    def send_thinking_end(self, elapsed: float, token_usage: dict) -> None:
+        """发送思考结束信号"""
+        self.send("thinking_end", {
+            "elapsed": elapsed,
+            "tokenUsage": token_usage,
+        })
+
     # ===== 确认协议 =====
 
     def request_confirmation(self, title: str, options: List[str], default: int = 0) -> Optional[int]:

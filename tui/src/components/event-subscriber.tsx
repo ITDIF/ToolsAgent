@@ -65,6 +65,14 @@ export function EventSubscriber({
       dispatchUi({ type: 'SET_THINKING', isThinking: true })
     }))
 
+    unsubs.push(bus.on('thinking_update', (payload) => {
+      dispatchUi({
+        type: 'UPDATE_THINKING',
+        elapsed: payload.elapsed,
+        tokenDelta: payload.tokenDelta,
+      })
+    }))
+
     unsubs.push(bus.on('thinking_end', (payload) => {
       dispatchUi({ type: 'SET_THINKING', isThinking: false })
       dispatchUi({ type: 'ADD_TOKENS', tokens: payload.tokenUsage })
@@ -93,6 +101,10 @@ export function EventSubscriber({
         id: `err_${Date.now()}`,
         content: payload.content,
       })
+    }))
+
+    unsubs.push(bus.on('exit', () => {
+      process.exit(0)
     }))
 
     return () => unsubs.forEach(unsub => unsub())

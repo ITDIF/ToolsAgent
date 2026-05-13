@@ -4,6 +4,7 @@ import io
 import time
 import logging
 import shutil
+import threading
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -329,19 +330,33 @@ def _run_tui(provider, default_model, session_id):
         try:
             before = time.time()
             before_usage = file_agent.get_token_usage()
+            stop_update_event = threading.Event()
+
+            # 后台线程：定期发送思考状态更新
+            def _send_thinking_updates():
+                """后台线程：定期发送思考状态更新"""
+                while not stop_update_event.is_set():
+                    elapsed = time.time() - before
+                    current_usage = file_agent.get_token_usage()
+                    token_delta = current_usage["total"] - before_usage["total"]
+                    tui_bridge.send_thinking_update(elapsed, token_delta)
+                    if stop_update_event.wait(0.1):
+                        break
+
             try:
-                tui_bridge.send("thinking_start", {})
+                tui_bridge.send_thinking_start()
+                update_thread = threading.Thread(target=_send_thinking_updates, daemon=True)
+                update_thread.start()
                 response = file_agent.process(content)
+                stop_update_event.set()
+                update_thread.join(timeout=0.5)
                 elapsed = time.time() - before
                 after_usage = file_agent.get_token_usage()
 
-                tui_bridge.send("thinking_end", {
-                    "elapsed": elapsed,
-                    "tokenUsage": {
-                        "input": after_usage["input"] - before_usage["input"],
-                        "output": after_usage["output"] - before_usage["output"],
-                        "total": after_usage["total"] - before_usage["total"],
-                    },
+                tui_bridge.send_thinking_end(elapsed, {
+                    "input": after_usage["input"] - before_usage["input"],
+                    "output": after_usage["output"] - before_usage["output"],
+                    "total": after_usage["total"] - before_usage["total"],
                 })
 
                 tui_bridge.send("assistant_msg", {
@@ -356,6 +371,7 @@ def _run_tui(provider, default_model, session_id):
             except Exception as e:
                 import traceback
                 logging.error(f"处理消息失败: {e}\n{traceback.format_exc()}")
+                stop_update_event.set()
                 tui_bridge.send("error", {"content": f"处理失败: {e}"})
 
             save_session(sid, file_agent.messages)
@@ -390,6 +406,7 @@ def _run_tui(provider, default_model, session_id):
                             pass
                 if cmd_name in ("exit", "quit", "q"):
                     tui_bridge.send("system_notify", {"content": "正在退出...", "level": "info"})
+                    tui_bridge.send("exit", {})  # 通知前端退出
                     return
                 # /model <name> 快捷切换
                 if cmd_name in ("model", "m") and len(parts) > 1:

@@ -15,6 +15,10 @@ export class FallbackRenderer {
   private client: TuiClient
   private rl: readline.Interface | null = null
   private waitingConfirmation = false
+  private isThinking = false
+  private thinkingStart = 0
+  private thinkingTokenDelta = 0
+  private updateInterval: NodeJS.Timeout | null = null
 
   constructor(bus: TypedEventBus, client: TuiClient) {
     this.bus = bus
@@ -75,11 +79,30 @@ export class FallbackRenderer {
     })
 
     this.bus.on('thinking_start', () => {
+      this.isThinking = true
+      this.thinkingStart = Date.now()
+      this.thinkingTokenDelta = 0
+      // 启动定时更新
+      this.updateInterval = setInterval(() => {
+        const elapsed = (Date.now() - this.thinkingStart) / 1000
+        this.updateThinkingLine(elapsed, this.thinkingTokenDelta)
+      }, 100)
       process.stdout.write(chalk.gray(' ⋯ '))
     })
 
+    this.bus.on('thinking_update', (payload: any) => {
+      this.thinkingTokenDelta = payload.tokenDelta
+      const elapsed = payload.elapsed || (Date.now() - this.thinkingStart) / 1000
+      this.updateThinkingLine(elapsed, this.thinkingTokenDelta)
+    })
+
     this.bus.on('thinking_end', () => {
-      process.stdout.write('\r' + ' '.repeat(10) + '\r')
+      if (this.updateInterval) {
+        clearInterval(this.updateInterval)
+        this.updateInterval = null
+      }
+      this.isThinking = false
+      process.stdout.write('\r' + ' '.repeat(50) + '\r')
     })
 
     this.bus.on('confirmation_request', (payload) => {
@@ -129,6 +152,11 @@ export class FallbackRenderer {
       console.log(chalk.blue(`📋 会话: ${payload.sessionId} (${payload.messageCount} 条消息)`))
     })
 
+    this.bus.on('exit', () => {
+      this.rl?.close()
+      process.exit(0)
+    })
+
     // 用户输入
     this.rl.on('line', (line) => {
       if (this.waitingConfirmation) return // 确认模式下忽略
@@ -149,6 +177,21 @@ export class FallbackRenderer {
       console.log(chalk.gray('\n再见！'))
       process.exit(0)
     })
+  }
+
+  private updateThinkingLine(elapsed: number, tokenDelta: number): void {
+    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+    const frame = frames[Math.floor(elapsed * 10) % frames.length]
+    const parts = []
+    if (elapsed >= 0) {
+      parts.push(`${elapsed.toFixed(1)}s`)
+    }
+    if (tokenDelta > 0) {
+      parts.push(`+${tokenDelta}t`)
+    }
+    const statusText = parts.length > 0 ? `  ${parts.join(' | ')}` : ''
+    const line = chalk.gray(` ${frame} 思考中...${statusText}`)
+    process.stdout.write(`\r${line}`)
   }
 
   private handleConfirmation(payload: ConfirmationRequestPayload): void {
