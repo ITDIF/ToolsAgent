@@ -280,6 +280,7 @@ def _run_tui(provider, default_model, session_id):
 
     bridge = TuiBridge()
     port = bridge.start_server()
+    node_process_ref = [None]  # 可变容器，供闭包引用 node 子进程
 
     # 构造工具状态回调
     def _build_tool_status_sender(tui_bridge):
@@ -407,6 +408,11 @@ def _run_tui(provider, default_model, session_id):
                 if cmd_name in ("exit", "quit", "q"):
                     tui_bridge.send("system_notify", {"content": "正在退出...", "level": "info"})
                     tui_bridge.send("exit", {})  # 通知前端退出
+                    # 后端主动清理，不依赖前端 process.exit
+                    tui_bridge.close()
+                    proc = node_process_ref[0]
+                    if proc and proc.poll() is None:
+                        proc.terminate()
                     return
                 # /model <name> 快捷切换
                 if cmd_name in ("model", "m") and len(parts) > 1:
@@ -428,6 +434,12 @@ def _run_tui(provider, default_model, session_id):
             cmd_args = payload.get("args", {}) or {}
             if name in ("exit", "quit", "q"):
                 tui_bridge.send("system_notify", {"content": "正在退出...", "level": "info"})
+                tui_bridge.send("exit", {})  # 通知前端退出
+                # 后端主动清理，不依赖前端 process.exit
+                tui_bridge.close()
+                proc = node_process_ref[0]
+                if proc and proc.poll() is None:
+                    proc.terminate()
                 return
             dispatch_command(tui_bridge, file_agent, sid, name, cmd_args)
 
@@ -481,6 +493,7 @@ def _run_tui(provider, default_model, session_id):
             cwd=tui_dir,
             env=env
         )
+        node_process_ref[0] = node_process
 
         bridge.wait_for_connection()
 
