@@ -62,6 +62,37 @@ def _is_drive_root(path: Path) -> bool:
         return str(path) == "/"
     s = str(path)
     return bool(re.match(r"^[a-zA-Z]:[/\\]?$", s))
+def assert_safe_read_path(path: Union[str, Path], config: Optional[dict] = None) -> None:
+    """校验路径是否允许读取（搜索/列举/扫描等只读操作）。
+    规则：
+    - 若 config.allowed_roots 非空：只允许在白名单目录内
+    - 否则：只要不落在 blocked_roots 即可
+    不检查符号链接（只读操作通过符号链接不会造成写入风险）。
+    """
+    target = _resolve(path)
+    cfg = config or {}
+    allowed_roots: List[str] = cfg.get("allowed_roots") or []
+    if allowed_roots:
+        roots = [_resolve(r) for r in allowed_roots]
+        if not any(_is_under(target, r) for r in roots):
+            raise PathSafetyError(
+                f"读取路径不在允许的根目录内: {path} (allowed_roots={allowed_roots})",
+                ErrorCode.NOT_IN_ALLOWED_ROOTS,
+                {"path": str(path), "allowed_roots": allowed_roots}
+            )
+        return
+    blocked: Optional[List[str]] = cfg.get("blocked_roots")
+    if blocked is None:
+        blocked = _default_blocked_roots()
+    for b in blocked:
+        if _is_under(target, _resolve(b)):
+            raise PathSafetyError(
+                f"禁止读取系统目录: {path} (命中 {b})",
+                ErrorCode.SYSTEM_DIR_READ_FORBIDDEN,
+                {"path": str(path), "blocked_path": b}
+            )
+
+
 def assert_safe_write_path(path: Union[str, Path], config: Optional[dict] = None) -> None:
     """
     校验路径是否允许写入（创建/修改/删除）。
@@ -78,8 +109,9 @@ def assert_safe_write_path(path: Union[str, Path], config: Optional[dict] = None
     path_str = str(path)
     # 先解析路径为真实路径（解析所有符号链接）
     target = _resolve(path)
-    # 检查原始路径是否是存在的符号链接
-    if os.path.exists(path) and os.path.islink(path):
+    # 检查原始路径是否是符号链接（os.path.islink 在路径不存在时返回 False，
+    # 无需先 os.path.exists，避免 TOCTOU 竞态）
+    if os.path.islink(path):
         raise PathSafetyError(
             f"禁止操作符号链接: {path}",
             ErrorCode.SYMLINK_FORBIDDEN,
@@ -90,12 +122,21 @@ def assert_safe_write_path(path: Union[str, Path], config: Optional[dict] = None
     current = target
     while current.parent != current:  # 直到根目录
         current = current.parent
-        if os.path.exists(current) and os.path.islink(current):
+        if os.path.islink(current):
             raise PathSafetyError(
                 f"路径父目录包含符号链接: {current} -> {os.readlink(current)}",
                 ErrorCode.SYMLINK_FORBIDDEN,
                 {"path": str(current), "target": os.readlink(current)}
             )
+
+    # 再次解析路径，确认与首次解析结果一致（缩短 TOCTOU 竞态窗口）
+    recheck = _resolve(path)
+    if recheck != target:
+        raise PathSafetyError(
+            f"路径解析结果在检查期间发生变化，可能存在符号链接竞态: {path}",
+            ErrorCode.SYMLINK_FORBIDDEN,
+            {"path": path_str, "first_resolve": str(target), "second_resolve": str(recheck)}
+        )
 
     cfg = config or {}
     # 检查是否为盘符根目录

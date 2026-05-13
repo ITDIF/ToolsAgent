@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from threading import Event, local
 
-from ..security.sandbox import assert_safe_write_path, PathSafetyError
+from ..security.sandbox import assert_safe_write_path, assert_safe_read_path, PathSafetyError
 from ..infra.config import get_config
 from ..infra.constants import ConfigDefaults, FileConstants
 from ..infra.errors import ParameterError, error_response, ErrorCode
@@ -284,6 +284,12 @@ def read_file(path: str) -> Dict[str, Any]:
         return {"success": False, "error": f"路径不是文件: {path}"}
 
     cfg = get_config()
+    try:
+        assert_safe_read_path(path, cfg)
+    except PathSafetyError as e:
+        return {"success": False, "error": str(e)}
+
+    max_bytes = int(cfg.get("max_read_bytes", ConfigDefaults.MAX_READ_BYTES))
     max_bytes = int(cfg.get("max_read_bytes", ConfigDefaults.MAX_READ_BYTES))
 
     try:
@@ -415,6 +421,11 @@ def search_files(
         return {"success": False, "error": f"路径不存在: {path}"}
 
     cfg = get_config()
+    try:
+        assert_safe_read_path(path, cfg)
+    except PathSafetyError as e:
+        return {"success": False, "error": str(e)}
+
     max_results = int(cfg.get("max_search_results", ConfigDefaults.MAX_SEARCH_RESULTS))
     max_depth = int(cfg.get("max_search_depth", ConfigDefaults.MAX_SEARCH_DEPTH))
     tool_timeout = float(cfg.get("tool_timeout", ConfigDefaults.TOOL_TIMEOUT))
@@ -525,6 +536,12 @@ def list_files(path: str = ".") -> Dict[str, Any]:
     if not dir_path.exists():
         return {"success": False, "error": f"路径不存在: {path}"}
 
+    cfg = get_config()
+    try:
+        assert_safe_read_path(path, cfg)
+    except PathSafetyError as e:
+        return {"success": False, "error": str(e)}
+
     try:
         files = []
         for item in dir_path.iterdir():
@@ -576,6 +593,11 @@ def scan_disk(
         return {"success": False, "error": f"路径不存在: {path}"}
 
     cfg = get_config()
+    try:
+        assert_safe_read_path(path, cfg)
+    except PathSafetyError as e:
+        return {"success": False, "error": str(e)}
+
     max_depth = int(max_depth if max_depth is not None else cfg.get("max_search_depth", 10))
     max_results = int(max_results if max_results is not None else cfg.get("max_search_results", 100))
     tool_timeout = float(cfg.get("tool_timeout", ConfigDefaults.TOOL_TIMEOUT))

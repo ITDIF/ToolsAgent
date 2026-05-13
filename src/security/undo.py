@@ -43,7 +43,7 @@ class UndoManager:
         self._undo_stacks: Dict[str, List[Dict[str, Any]]] = {}
         self._active_session_id: str = "default"
         self._max_undo: int = max_undo
-        self._undo_lock = threading.Lock()
+        self._undo_lock = threading.RLock()
         # 批量上下文: 不为 None 时,新写操作的 undo 记录会追加到此 list 而非主栈
         self._batch_context = threading.local()
 
@@ -54,11 +54,13 @@ class UndoManager:
 
     def get_active_session(self) -> str:
         """返回当前活动会话 ID"""
-        return self._active_session_id
+        with self._undo_lock:
+            return self._active_session_id
 
     def _active_stack(self) -> List[Dict[str, Any]]:
         """返回当前活动会话对应的撤销栈,缺失则创建"""
-        return self._undo_stacks.setdefault(self._active_session_id, [])
+        with self._undo_lock:
+            return self._undo_stacks.setdefault(self._active_session_id, [])
 
     def get_undo_stack(self) -> List[Dict[str, Any]]:
         """获取当前活动会话的撤销栈快照"""
@@ -395,7 +397,7 @@ class UndoManager:
                 if not stack:
                     break
                 action = stack.pop()
-            ok, payload = self._apply_undo_action(action)
+                ok, payload = self._apply_undo_action(action)
             if not ok:
                 failures += 1
                 results.append({"success": False, "error": payload, "type": action.get("type")})

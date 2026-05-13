@@ -36,6 +36,7 @@ class ErrorCode(Enum):
     DRIVE_ROOT_FORBIDDEN = 30003, "禁止操作盘符根目录"
     NOT_IN_ALLOWED_ROOTS = 30004, "路径不在允许的根目录内"
     SYSTEM_DIR_FORBIDDEN = 30005, "禁止操作系统目录"
+    SYSTEM_DIR_READ_FORBIDDEN = 30006, "禁止读取系统目录"
 
     # LLM相关错误 4xxxx
     LLM_API_ERROR = 40001, "LLM API调用失败"
