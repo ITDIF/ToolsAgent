@@ -244,26 +244,14 @@ class FileAgent:
 
             # 用于实时 token 统计（初始化为 0，预估值只用于即时显示）
             current_tokens = {"input": 0, "output": 0, "total": 0}
-            last_token_total = 0  # 记录上一次发送的 token 总数，用于计算增量
-            first_update = True   # 首次发送使用预估的初始值
             estimated_display = estimated_input  # 用于即时显示
 
             def _send_updates():
-                nonlocal last_token_total, first_update
                 while not stop_update.is_set():
                     elapsed = time.time() - iter_start
                     # 使用实时累积的 token 数，如果累积为 0 则显示预估
-                    if first_update and current_tokens["total"] == 0:
-                        # 首次发送使用预估的初始值
-                        token_to_send = estimated_display
-                    else:
-                        # 计算自上次发送以来的增量
-                        current_total = current_tokens["total"] if current_tokens["total"] > 0 else 0
-                        token_to_send = current_total - last_token_total
-                        
-                    self.thinking_callback("update", elapsed, token_to_send)
-                    last_token_total = current_tokens["total"]
-                    first_update = False
+                    token_delta = current_tokens["total"] if current_tokens["total"] > 0 else estimated_display
+                    self.thinking_callback("update", elapsed, token_delta)
                     if stop_update.wait(0.1):
                         break
 
@@ -323,11 +311,6 @@ class FileAgent:
                     "total": after_llm_usage["total"] - before_usage["total"],
                 }
             self.thinking_callback("end", elapsed, token_usage)
-
-            # 将本次迭代的 token 增量累加到 agent 总计
-            self.total_tokens["input"] += token_usage["input"]
-            self.total_tokens["output"] += token_usage["output"]
-            self.total_tokens["total"] += token_usage["total"]
 
             # 重置 LLM provider 的 token 统计，避免累积到下一次调用
             self.llm.reset_token_usage()

@@ -53,7 +53,7 @@ export function MessageList() {
   const { stdout } = useStdout()
 
   const termWidth = stdout?.columns ?? 80
-  // 计算消息区可用行数：终端总行数 - 状态栏(3行) - 输入框(3行)
+  // 计算消息区可用行数：终端总行数 - 状态栏(3行) - 分割线(2行) - 输入框(1行)
   const availableHeight = Math.max((stdout?.rows ?? 24) - 6, 4)
 
   // 从最新消息往回累加，只保留能放下的消息

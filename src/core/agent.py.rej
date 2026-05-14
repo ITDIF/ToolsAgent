@@ -1,0 +1,25 @@
+--- /dev/null
++++ /dev/null
+@@ -251,9 +253,18 @@ def _send_updates():
+                 while not stop_update.is_set():
+                     elapsed = time.time() - iter_start
+                     # 使用实时累积的 token 数，如果累积为 0 则显示预估
+-                    token_delta = current_tokens["total"] if current_tokens["total"] > 0 else estimated_display
++                    if first_update and current_tokens["total"] == 0:
++                        # 首次发送使用预估的初始值
++                        token_to_send = estimated_display
++                    else:
++                        # 计算自上次发送以来的增量
++                        current_total = current_tokens["total"] if current_tokens["total"] > 0 else 0
++                        token_to_send = current_total - last_token_total
++                        
++                    self.thinking_callback("update", elapsed, token_to_send)
++                    last_token_total = current_tokens["total"]
++                    first_update = False
++                    if stop_update.wait(0.1):
++                        break
+ 
+-                    self.thinking_callback("update", elapsed, token_delta)
+-                    if stop_update.wait(0.1):
+-                        break
+ 

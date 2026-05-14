@@ -28,12 +28,6 @@ ToolsAgent TUI 前端
 const terminal = detectTerminal()
 const preferredTheme = detectPreferredTheme()
 
-if (!terminal.isTTY) {
-  console.log('⚠ 检测到非终端环境，使用兼容模式')
-  console.log('💡 如需更好的交互体验，请使用系统终端运行')
-  console.log()
-}
-
 // 创建 EventBus 和 Client
 const bus = new TypedEventBus()
 const client = new TuiClient(bus)
@@ -44,9 +38,8 @@ client.connect('127.0.0.1', port).catch((err) => {
   process.exit(1)
 })
 
-// 根据终端能力选择渲染模式
 if (terminal.mode === 'full') {
-  // 使用 Ink/React 渲染
+  // 真实终端：Ink 原生渲染
   const { waitUntilExit } = render(
     <App
       bus={bus}
@@ -64,7 +57,9 @@ if (terminal.mode === 'full') {
     process.exit(0)
   })
 } else {
-  // 伪终端兼容模式
+  // 伪终端（IDE 终端等）：readline + chalk 渲染
+  // Ink 的 eraseLines 在 Windows pipe 下无效，无法原地覆盖，
+  // 改用 readline 模式，每条消息追加输出。
   const renderer = new FallbackRenderer(bus, client)
   renderer.start()
 }

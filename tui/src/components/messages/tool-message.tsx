@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Box, Text } from 'ink'
 import type { Message } from '../../store/message-store.js'
 import { useTheme } from '../../theme/context.js'
+import { S } from '../../utils/symbols.js'
 
 export function ToolMessage({ message }: { message: Message }) {
   const { theme } = useTheme()
@@ -15,10 +16,10 @@ export function ToolMessage({ message }: { message: Message }) {
   }, [message.toolStatus])
 
   const statusConfig: Record<string, { icon: string; color: string }> = {
-    running: { icon: '⟳', color: theme.warning },
-    success: { icon: '✓', color: theme.success },
-    error:   { icon: '✗', color: theme.error },
-    info:    { icon: 'ℹ', color: theme.suggestion },
+    running: { icon: S.refresh, color: theme.warning },
+    success: { icon: S.check,  color: theme.success },
+    error:   { icon: S.cross,  color: theme.error },
+    info:    { icon: S.info,   color: theme.suggestion },
   }
 
   const config = statusConfig[message.toolStatus || 'running'] || statusConfig.running
@@ -33,7 +34,7 @@ export function ToolMessage({ message }: { message: Message }) {
           <Text color={theme.subtle}> {message.toolDescription}</Text>
         )}
         {hasDetails && (
-          <Text color={theme.subtle}> {expanded ? '▼' : '▶'}</Text>
+          <Text color={theme.subtle}> {expanded ? S.expand : S.collapse}</Text>
         )}
       </Box>
 

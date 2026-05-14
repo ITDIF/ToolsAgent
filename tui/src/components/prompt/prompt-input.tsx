@@ -4,10 +4,12 @@ import { TuiClient } from '../../bridge/tui-client.js'
 import { useMessageDispatch } from '../../store/message-store.js'
 import { useUiState } from '../../store/ui-store.js'
 import { useTheme } from '../../theme/context.js'
+import { S } from '../../utils/symbols.js'
 
-export function PromptInput({ client }: { client: TuiClient }) {
+/** raw mode 输入组件：完整光标/历史支持 */
+function RawModeInput({ client }: { client: TuiClient }) {
   const [input, setInput] = useState('')
-  const [cursorPos, setCursorPos] = useState(0) // 光标在 input 中的位置
+  const [cursorPos, setCursorPos] = useState(0)
   const [history, setHistory] = useState<string[]>([])
   const [historyIdx, setHistoryIdx] = useState(-1)
   const { isThinking, pendingConfirmation } = useUiState()
@@ -15,21 +17,16 @@ export function PromptInput({ client }: { client: TuiClient }) {
   const { theme } = useTheme()
 
   useInput((ch, key) => {
-    // 有确认弹窗时，输入由 ConfirmationOverlay 处理
     if (pendingConfirmation) return
 
     if (key.return) {
       const content = input.trim()
       if (!content) return
 
-      // 记录历史
       setHistory(prev => [...prev, content])
       setHistoryIdx(-1)
-
-      // 添加用户消息到 store
       dispatchMsg({ type: 'ADD_USER_MESSAGE', id: `user_${Date.now()}`, content })
 
-      // 发送给后端
       if (content.startsWith('/')) {
         const spaceIdx = content.indexOf(' ')
         const name = (spaceIdx === -1 ? content.slice(1) : content.slice(1, spaceIdx)).toLowerCase()
@@ -92,13 +89,11 @@ export function PromptInput({ client }: { client: TuiClient }) {
       return
     }
 
-    // Home: 光标移到行首
     if (key.ctrl && ch === 'a') {
       setCursorPos(0)
       return
     }
 
-    // End: 光标移到行尾 (Ctrl+E)
     if (key.ctrl && ch === 'e') {
       setCursorPos(input.length)
       return
@@ -109,26 +104,52 @@ export function PromptInput({ client }: { client: TuiClient }) {
       return
     }
 
-    // 普通字符输入：在光标位置插入
     if (ch && !key.ctrl && !key.meta) {
       setInput(prev => prev.slice(0, cursorPos) + ch + prev.slice(cursorPos))
       setCursorPos(prev => prev + 1)
     }
   })
 
-  const promptChar = isThinking ? '⋯' : '▸'
+  const promptChar = isThinking ? S.thinking : S.prompt
   const promptColor = isThinking ? theme.warning : theme.success
-
-  // 将输入分为光标前和光标后两部分
   const beforeCursor = input.slice(0, cursorPos)
   const afterCursor = input.slice(cursorPos)
 
   return (
-    <Box borderStyle="single" borderColor={theme.subtle} paddingX={1}>
-      <Text color={promptColor}>{promptChar} </Text>
-      <Text color={theme.text}>{beforeCursor}</Text>
-      <Text color={theme.subtle} inverse>▎</Text>
-      <Text color={theme.text}>{afterCursor}</Text>
+    <Box width="100%">
+      <Text color={theme.subtle}>{S.vLine} </Text>
+      <Box flexGrow={1}>
+        <Text color={promptColor}>{promptChar} </Text>
+        <Text color={theme.text}>{beforeCursor}</Text>
+        <Text color={theme.subtle} inverse>{S.cursor}</Text>
+        <Text color={theme.text}>{afterCursor}</Text>
+      </Box>
+      <Text color={theme.subtle}> {S.vLine}</Text>
     </Box>
   )
+}
+
+/** 非 raw mode 提示：readline 接管输入 */
+function ReadlineHint() {
+  const { isThinking } = useUiState()
+  const { theme } = useTheme()
+  const promptChar = isThinking ? S.thinking : S.prompt
+  const promptColor = isThinking ? theme.warning : theme.success
+
+  return (
+    <Box width="100%">
+      <Text color={theme.subtle}>{S.vLine} </Text>
+      <Text color={promptColor}>{promptChar} </Text>
+      <Text color={theme.subtle}>在下方输入...</Text>
+      <Box flexGrow={1} />
+      <Text color={theme.subtle}> {S.vLine}</Text>
+    </Box>
+  )
+}
+
+export function PromptInput({ client, hasRawMode }: { client: TuiClient; hasRawMode: boolean }) {
+  if (!hasRawMode) {
+    return <ReadlineHint />
+  }
+  return <RawModeInput client={client} />
 }

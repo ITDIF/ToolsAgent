@@ -4,12 +4,14 @@ import chalk from 'chalk'
 import { TypedEventBus } from './bridge/event-bus.js'
 import { TuiClient } from './bridge/tui-client.js'
 import type { ConfirmationRequestPayload } from './bridge/protocol.js'
+import { S } from './utils/symbols.js'
 
 /**
  * 伪终端兼容渲染器。
- * 当 Ink 无法使用（非 TTY 或不支持 raw mode）时，
- * 使用 readline + chalk 提供基本的交互体验。
+ * 当 Ink 无法原地覆盖时（Windows pipe 下 eraseLines 无效），
+ * 使用 readline + chalk 提供滚动式输出。
  */
+
 export class FallbackRenderer {
   private bus: TypedEventBus
   private client: TuiClient
@@ -26,18 +28,29 @@ export class FallbackRenderer {
     this.client = client
   }
 
-  /** 暂停 readline 并清除当前行的 prompt */
+  private get cols(): number {
+    return Math.max((stdout?.columns ?? 80) - 1, 20)
+  }
+
+  private printDivider(color?: typeof chalk.gray): void {
+    const fn = color || chalk.gray
+    console.log(fn(S.hLine.repeat(this.cols)))
+  }
+
+  private printRow(content: string, color?: typeof chalk.gray): void {
+    const fn = color || chalk.gray
+    console.log(fn(S.vLine) + ' ' + content)
+  }
+
   private pausePrompt(): void {
     if (!this.rl) return
-    // 先清除 readline 当前行的内容（包括 prompt）
     this.rl.pause()
-    // 清除当前行
     stdout.write('\r\x1b[2K')
   }
 
-  /** 恢复 readline 并重新显示 prompt */
   private resumePrompt(): void {
     if (!this.rl) return
+    this.printDivider()
     this.rl.resume()
     this.rl.prompt(true)
   }
@@ -46,16 +59,16 @@ export class FallbackRenderer {
     this.rl = readline.createInterface({
       input: stdin,
       output: stdout,
-      prompt: chalk.green('▸ '),
+      prompt: chalk.gray(S.vLine) + ' ' + chalk.green(S.prompt + ' '),
     })
 
-    // 注册事件监听
     this.bus.on('connected', () => {
-      console.log(chalk.green('✓ 已连接到后端服务'))
+      console.log(chalk.green(S.check + ' 已连接到后端服务'))
       console.log()
-      console.log(chalk.cyan('ToolsAgent 本地文件操作助手'))
-      console.log(chalk.gray('────────────────────────'))
-      console.log(chalk.gray('输入指令按回车发送，/help 查看命令'))
+      this.printDivider(chalk.cyan)
+      this.printRow(chalk.cyan('ToolsAgent 本地文件操作助手'), chalk.cyan)
+      this.printRow(chalk.gray('输入指令按回车发送，/help 查看命令'))
+      this.printDivider(chalk.cyan)
       console.log()
       this.rl?.prompt()
     })
@@ -67,9 +80,9 @@ export class FallbackRenderer {
     })
 
     this.bus.on('ready', (payload) => {
-      console.log(chalk.gray(`模型: ${payload.model} | 会话: ${payload.sessionId.slice(0, 8)}`))
-      console.log()
-      this.rl?.prompt()
+      this.pausePrompt()
+      this.printRow(chalk.gray(`模型: ${payload.model} | 会话: ${payload.sessionId.slice(0, 8)}`))
+      this.resumePrompt()
     })
 
     this.bus.on('assistant_msg', (payload) => {
@@ -80,20 +93,21 @@ export class FallbackRenderer {
 
       this.clearThinkingLine()
       this.pausePrompt()
+      this.printDivider()
       console.log()
-      console.log(chalk.rgb(215, 119, 87)('◆ ') + payload.content + metaStr)
+      console.log(chalk.rgb(215, 119, 87)(S.diamond + ' ') + payload.content + metaStr)
       console.log()
       this.resumePrompt()
     })
 
     this.bus.on('tool_status', (payload) => {
       const icons: Record<string, string> = {
-        running: chalk.yellow('⟳'),
-        success: chalk.green('✓'),
-        error: chalk.red('✗'),
-        info: chalk.blue('ℹ'),
+        running: chalk.yellow(S.refresh),
+        success: chalk.green(S.check),
+        error: chalk.red(S.cross),
+        info: chalk.blue(S.info),
       }
-      const icon = icons[payload.status] || chalk.gray('·')
+      const icon = icons[payload.status] || chalk.gray(S.hLine)
       this.clearThinkingLine()
       this.pausePrompt()
       console.log(`  ${icon} ${payload.toolName}: ${payload.description}`)
@@ -103,7 +117,6 @@ export class FallbackRenderer {
     })
 
     this.bus.on('thinking_start', () => {
-      // 如果上一轮思考还没结束（不应该发生），先清理
       if (this.updateInterval) {
         clearInterval(this.updateInterval)
         this.updateInterval = null
@@ -111,10 +124,8 @@ export class FallbackRenderer {
       this.isThinking = true
       this.thinkingStart = Date.now()
       this.thinkingTokenDelta = 0
-      // 暂停 readline，清除 prompt，在独立行显示思考动画
       this.pausePrompt()
       this.updateThinkingLine(0, 0)
-      // 启动定时更新
       this.updateInterval = setInterval(() => {
         const elapsed = (Date.now() - this.thinkingStart) / 1000
         this.updateThinkingLine(elapsed, this.thinkingTokenDelta)
@@ -132,7 +143,6 @@ export class FallbackRenderer {
         clearInterval(this.updateInterval)
         this.updateInterval = null
       }
-      // 显示本轮思考的最终统计，然后清除
       if (payload) {
         const elapsed = payload.elapsed || (Date.now() - this.thinkingStart) / 1000
         const tokenUsage = payload.tokenUsage
@@ -142,13 +152,12 @@ export class FallbackRenderer {
         }
         const summary = parts.join(' | ')
         stdout.write(`\r${' '.repeat(this.thinkingLineLen)}\r`)
-        console.log(chalk.gray(`  ✓ 思考完成 ${summary}`))
+        console.log(chalk.gray(`  ${S.check} 思考完成 ${summary}`))
         this.thinkingLineLen = 0
       } else {
         this.clearThinkingLine()
       }
       this.isThinking = false
-      // 不立即恢复 prompt，等 tool_status 或 assistant_msg 再显示
     })
 
     this.bus.on('confirmation_request', (payload) => {
@@ -164,7 +173,7 @@ export class FallbackRenderer {
       const colorFn = colors[payload.level] || chalk.gray
       this.clearThinkingLine()
       this.pausePrompt()
-      console.log(colorFn('ℹ ') + payload.content)
+      console.log(colorFn(S.info + ' ') + payload.content)
       if (!this.waitingConfirmation) {
         this.resumePrompt()
       }
@@ -172,14 +181,14 @@ export class FallbackRenderer {
 
     this.bus.on('model_update', (payload) => {
       this.pausePrompt()
-      console.log(chalk.cyan(`🔄 模型切换: ${payload.model}`))
+      console.log(chalk.cyan(`模型切换: ${payload.model}`))
       this.resumePrompt()
     })
 
     this.bus.on('error', (payload) => {
       this.clearThinkingLine()
       this.pausePrompt()
-      console.log(chalk.red('✗ ') + payload.content)
+      console.log(chalk.red(S.cross + ' ') + payload.content)
       if (!this.waitingConfirmation) {
         this.resumePrompt()
       }
@@ -191,20 +200,20 @@ export class FallbackRenderer {
         for (const r of payload.results || []) {
           if (r.success) {
             const msg = typeof r.message === 'string' ? r.message : (r.message as any)?.label || '完成'
-            console.log(chalk.green('  ✓ ') + msg)
+            console.log(chalk.green(`  ${S.check} `) + msg)
           } else {
-            console.log(chalk.red('  ✗ ') + (r.error || '失败'))
+            console.log(chalk.red(`  ${S.cross} `) + (r.error || '失败'))
           }
         }
       } else {
-        console.log(chalk.red('✗ 撤销失败: ') + (payload.error || '未知错误'))
+        console.log(chalk.red(S.cross + ' 撤销失败: ') + (payload.error || '未知错误'))
       }
       this.resumePrompt()
     })
 
     this.bus.on('session_info', (payload) => {
       this.pausePrompt()
-      console.log(chalk.blue(`📋 会话: ${payload.sessionId} (${payload.messageCount} 条消息)`))
+      console.log(chalk.blue(`会话: ${payload.sessionId} (${payload.messageCount} 条消息)`))
       this.resumePrompt()
     })
 
@@ -213,9 +222,8 @@ export class FallbackRenderer {
       process.exit(0)
     })
 
-    // 用户输入
     this.rl.on('line', (line) => {
-      if (this.waitingConfirmation) return // 确认模式下忽略
+      if (this.waitingConfirmation) return
       const content = line.trim()
       if (content) {
         this.client.sendUserInput(content)
@@ -243,8 +251,7 @@ export class FallbackRenderer {
   }
 
   private updateThinkingLine(elapsed: number, tokenDelta: number): void {
-    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-    const frame = frames[Math.floor(elapsed * 10) % frames.length]
+    const frame = S.spinner[Math.floor(elapsed * 10) % S.spinner.length]
     const parts = []
     if (elapsed >= 0) {
       parts.push(`${elapsed.toFixed(1)}s`)
@@ -263,17 +270,20 @@ export class FallbackRenderer {
     this.clearThinkingLine()
     this.pausePrompt()
     console.log()
-    console.log(chalk.yellow('⚠ ') + payload.title)
+    this.printDivider(chalk.yellow)
+    this.printRow(chalk.yellow(S.warn + ' ' + payload.title), chalk.yellow)
     payload.options.forEach((opt, i) => {
-      console.log(`  ${i + 1}. ${opt}`)
+      console.log(chalk.yellow(S.vLine) + `   ${i + 1}. ${opt}`)
     })
+    this.printRow(chalk.gray('请选择 (数字/回车默认/Esc取消)'), chalk.yellow)
+    this.printDivider(chalk.yellow)
 
     const confirmRl = readline.createInterface({
       input: stdin,
       output: stdout,
     })
 
-    confirmRl.question(chalk.gray('请选择 (数字/回车默认/Esc取消): '), (answer) => {
+    confirmRl.question(chalk.gray(S.vLine + ' '), (answer) => {
       confirmRl.close()
       this.waitingConfirmation = false
 

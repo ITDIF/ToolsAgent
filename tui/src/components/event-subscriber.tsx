@@ -41,10 +41,6 @@ export function EventSubscriber({
         elapsed: payload.elapsed,
         tokenUsage: payload.tokenUsage,
       })
-      dispatchUi({
-        type: 'ADD_TOKENS',
-        tokens: payload.tokenUsage,
-      })
     }))
 
     unsubs.push(bus.on('tool_status', (payload) => {

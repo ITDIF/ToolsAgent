@@ -24,7 +24,7 @@ export function App({
       <UiStoreProvider>
         <MessageStoreProvider>
           <EventSubscriber bus={bus}>
-            <REPL client={client} />
+            <REPL client={client} hasRawMode={true} />
           </EventSubscriber>
         </MessageStoreProvider>
       </UiStoreProvider>

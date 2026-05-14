@@ -182,7 +182,7 @@ def _cmd_history(agent):
         return None, None
     try:
         idx = int(idx) - 1
-        if 0 <= idx < len(sessions):
+        if 0 <= idx < len(sessions):   
             sid = sessions[idx]['id']
             msgs = load_session(sid)
             if msgs is not None:
@@ -458,6 +458,17 @@ def _run_tui(provider, default_model, session_id):
     if not tui_script.exists():
         print(f"{Color.YELLOW}Node.js TUI 未构建，正在构建...{Color.RESET}")
         try:
+            # 确保 node_modules 已安装（tsc 等工具在 devDependencies 中）
+            node_modules = tui_dir / "node_modules"
+            if not node_modules.exists() or not (node_modules / ".package-lock.json").exists():
+                print(f"{Color.GRAY}安装依赖...{Color.RESET}")
+                subprocess.run(
+                    [npm_cmd, "install"],
+                    cwd=tui_dir,
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
             subprocess.run(
                 [npm_cmd, "run", "build"],
                 cwd=tui_dir,
@@ -483,7 +494,7 @@ def _run_tui(provider, default_model, session_id):
         node_process = subprocess.Popen(
             [node_cmd, str(tui_script)],
             cwd=tui_dir,
-            env=env
+            env=env,
         )
         node_process_ref[0] = node_process
 

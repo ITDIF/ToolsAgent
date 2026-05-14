@@ -2,6 +2,7 @@ import React from 'react'
 import { Box, Text } from 'ink'
 import type { Message } from '../../store/message-store.js'
 import { useTheme } from '../../theme/context.js'
+import { S } from '../../utils/symbols.js'
 
 export function AssistantMessage({ message }: { message: Message }) {
   const { theme } = useTheme()
@@ -16,7 +17,7 @@ export function AssistantMessage({ message }: { message: Message }) {
   return (
     <Box flexDirection="column">
       <Box>
-        <Text color={theme.briefLabelClaude}>◆ </Text>
+        <Text color={theme.briefLabelClaude}>{S.diamond} </Text>
         <Text color={theme.text}>{message.content}</Text>
       </Box>
       {meta.length > 0 && (

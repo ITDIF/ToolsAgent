@@ -2,6 +2,7 @@ import React from 'react'
 import { Box, Text } from 'ink'
 import type { Message } from '../../store/message-store.js'
 import { useTheme } from '../../theme/context.js'
+import { S } from '../../utils/symbols.js'
 
 export function SystemMessage({ message }: { message: Message }) {
   const { theme } = useTheme()
@@ -15,7 +16,7 @@ export function SystemMessage({ message }: { message: Message }) {
 
   return (
     <Box>
-      <Text color={color}>ℹ </Text>
+      <Text color={color}>{S.info} </Text>
       <Text color={theme.subtle}>{message.content}</Text>
     </Box>
   )

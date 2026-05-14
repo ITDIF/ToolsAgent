@@ -2,8 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { Box, Text } from 'ink'
 import { useTheme } from '../theme/context.js'
 import { useUiState } from '../store/ui-store.js'
-
-const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+import { S } from '../utils/symbols.js'
 
 export function Spinner({ label }: { label?: string }) {
   const { theme } = useTheme()
@@ -12,7 +11,7 @@ export function Spinner({ label }: { label?: string }) {
 
   useEffect(() => {
     const timer = setInterval(() => {
-      setFrame(f => (f + 1) % FRAMES.length)
+      setFrame(f => (f + 1) % S.spinner.length)
     }, 80)
     return () => clearInterval(timer)
   }, [])
@@ -31,7 +30,7 @@ export function Spinner({ label }: { label?: string }) {
 
   return (
     <Box>
-      <Text color={theme.claude}>{FRAMES[frame]}</Text>
+      <Text color={theme.claude}>{S.spinner[frame]}</Text>
       {label && <Text color={theme.subtle}> {label}</Text>}
       {statusText && <Text color={theme.subtle}>  {statusText}</Text>}
     </Box>
