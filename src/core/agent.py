@@ -20,12 +20,27 @@ def _thinking_animation(stop_event: threading.Event) -> None:
         sys.stdout.write(f"\r  \033[90m⋯  +{n}t  ({elapsed:.1f}s)\033[0m")
         sys.stdout.flush()
         n += 1
-        stop_event.wait(0.1)
+        stop_event.wait(0.05)
     # 清除动画行
     sys.stdout.write("\r" + " " * 40 + "\r")
     sys.stdout.flush()
 SYSTEM_PROMPT = """你是一个本地文件操作助手，可以帮助用户管理本地文件和文件夹。
 支持的操作：移动、复制、删除、创建文件/文件夹，读写文件内容，重命名，搜索文件，列出目录，压缩/解压，撤销操作，批量操作等。
+
+IMPORTANT - 文件修改预览流程：
+当用户要求修改文件内容时，必须遵循以下步骤：
+1. 先调用 preview_edit 工具，传入文件路径和新内容
+2. 将 preview_edit 返回的 diff 内容展示给用户
+3. 等待用户确认后再调用 write_file 执行实际修改
+
+示例工作流：
+- 用户说："修改 test.txt 第 5 行为 xxx"
+- 你先调用：preview_edit(path="test.txt", content="...修改后的完整内容...")
+- 展示返回的差异预览
+- 确认后再调用：write_file(path="test.txt", content="...修改后的完整内容...")
+
+对于新建文件，可以直接使用 write_file 或 create_file。
+
 请直接理解用户意图并执行对应操作，回复简洁明了，不要重复用户指令，不需要罗列支持的功能列表。
 涉及大量同类操作（>=3 个相关步骤）时，优先使用 batch_operations，方便用户一次撤销。
 执行删除、覆盖等危险操作前，请先确认用户意图。"""
@@ -264,7 +279,7 @@ class FileAgent:
                     self.thinking_callback("update", elapsed, token_to_send)
                     last_token_total = current_tokens["total"]
                     first_update = False
-                    if stop_update.wait(0.1):
+                    if stop_update.wait(0.05):
                         break
 
             update_thread = threading.Thread(target=_send_updates, daemon=True)

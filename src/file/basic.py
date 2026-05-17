@@ -2,6 +2,7 @@ import os
 import sys
 import shutil
 import time
+import difflib
 from pathlib import Path
 from typing import Any, Dict, List, Union, Optional, Callable, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -78,6 +79,7 @@ class ToolNames:
     CREATE_FILE = "create_file"
     READ_FILE = "read_file"
     WRITE_FILE = "write_file"
+    PREVIEW_EDIT = "preview_edit"
     RENAME_FILE = "rename_file"
     SEARCH_FILES = "search_files"
     LIST_FILES = "list_files"
@@ -117,7 +119,7 @@ def _is_paths_validated() -> bool:
 _BATCH_ALLOWED_TOOLS = {
     ToolNames.MOVE_FILE, ToolNames.COPY_FILE, ToolNames.DELETE_FILE,
     ToolNames.CREATE_FOLDER, ToolNames.CREATE_FILE,
-    ToolNames.WRITE_FILE, ToolNames.RENAME_FILE,
+    ToolNames.WRITE_FILE, ToolNames.PREVIEW_EDIT, ToolNames.RENAME_FILE,
     ToolNames.READ_FILE, ToolNames.LIST_FILES, ToolNames.SEARCH_FILES,
     ToolNames.EXTRACT_ARCHIVE, ToolNames.CREATE_ARCHIVE,
 }
@@ -311,10 +313,185 @@ def read_file(path: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+def _generate_diff(old_content: str, new_content: str, path: str) -> str:
+    """生成文件差异对比（类 Claude Code/Git diff 格式）
+
+    Args:
+        old_content: 原始内容
+        new_content: 新内容
+        path: 文件路径（用于显示）
+
+    Returns:
+        diff 字符串
+    """
+    old_lines = old_content.splitlines()
+    new_lines = new_content.splitlines()
+
+    # 使用 unified diff 格式
+    differ = difflib.Differ()
+    diff = list(differ.compare(old_lines, new_lines))
+
+    result_lines = []
+    old_line_num = 1
+    new_line_num = 1
+
+    i = 0
+    while i < len(diff):
+        line = diff[i]
+
+        if line.startswith("  "):
+            # 未修改行，跳过（只显示修改的部分）
+            old_line_num += 1
+            new_line_num += 1
+            i += 1
+        elif line.startswith("- "):
+            # 删除行
+            while i < len(diff) and diff[i].startswith("- "):
+                result_lines.append(f"      {old_line_num} - {diff[i][2:]}")
+                old_line_num += 1
+                i += 1
+
+            # 检查是否有对应的添加行（可能是替换操作）
+            while i < len(diff) and diff[i].startswith("+ "):
+                result_lines.append(f"      {new_line_num} + {diff[i][2:]}")
+                new_line_num += 1
+                i += 1
+        elif line.startswith("+ "):
+            # 纯添加行
+            result_lines.append(f"      {new_line_num} + {line[2:]}")
+            new_line_num += 1
+            i += 1
+        elif line.startswith("? "):
+            # diff 的差异标记行，跳过
+            i += 1
+        else:
+            i += 1
+
+    return "\n".join(result_lines)
+
+
 @_require_safe_write("path")
-def write_file(path: str, content: str, append: bool = False) -> Dict[str, Any]:
-    """写入文件内容,支持覆盖或追加。两种模式都支持撤销"""
+def preview_edit(path: str, content: str) -> Dict[str, Any]:
+    """预览文件修改，显示差异对比（只读操作）
+
+    类似 Claude Code 的文件预览对比功能。
+
+    Args:
+        path: 文件路径
+        content: 要写入的新内容
+
+    Returns:
+        {
+            "success": True,
+            "path": path,
+            "old_size": int,
+            "new_size": int,
+            "diff": str,
+            "summary": str
+        }
+    """
     file_path = Path(path)
+
+    if not file_path.exists():
+        return {"success": False, "error": f"文件不存在: {path}"}
+    if not file_path.is_file():
+        return {"success": False, "error": f"路径不是文件: {path}"}
+
+    cfg = get_config()
+    try:
+        assert_safe_read_path(path, cfg)
+    except PathSafetyError as e:
+        return {"success": False, "error": str(e)}
+
+    try:
+        old_content = file_path.read_text(encoding="utf-8")
+        old_size = len(old_content)
+        new_size = len(content)
+
+        diff_lines = _generate_diff(old_content, content, path)
+
+        # 生成摘要 - 计算行数变化
+        matcher = difflib.SequenceMatcher(None, old_content.splitlines(), content.splitlines())
+        additions = 0
+        deletions = 0
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == 'insert':
+                additions += j2 - j1
+            elif tag == 'delete':
+                deletions += i2 - i1
+            elif tag == 'replace':
+                # 替换操作 = 删除 + 新增
+                deletions += i2 - i1
+                additions += j2 - j1
+
+        # 生成更清晰的摘要格式
+        change_parts = []
+        if additions > 0:
+            change_parts.append(f"Added {additions} line" + ("s" if additions > 1 else ""))
+        if deletions > 0:
+            change_parts.append(f"Removed {deletions} line" + ("s" if deletions > 1 else ""))
+
+        if change_parts:
+            change_desc = ", ".join(change_parts)
+            summary = f"  |  {change_desc}"
+        else:
+            summary = "  |  No changes"
+
+        # 格式化完整输出
+        formatted_output = f"* Update({path})\n{summary}\n"
+        if diff_lines:
+            formatted_output += diff_lines
+
+        return {
+            "success": True,
+            "path": path,
+            "old_size": old_size,
+            "new_size": new_size,
+            "added_lines": additions,
+            "removed_lines": deletions,
+            "summary": formatted_output,
+            "diff": diff_lines,
+        }
+    except PermissionError as e:
+        return {"success": False, "error": f"权限不足，无法读取: {e}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@_require_safe_write("path")
+def write_file(path: str, content: str, append: bool = False, preview: bool = False) -> Dict[str, Any]:
+    """写入文件内容,支持覆盖或追加。两种模式都支持撤销
+
+    Args:
+        path: 文件路径
+        content: 要写入的内容
+        append: 是否追加模式，默认为 false（覆盖）
+        preview: 是否预览模式，只生成差异不实际写入
+
+    Returns:
+        成功返回 {"success": True, "message": "...", "diff": "..."(可选)}
+        预览模式返回 {"success": True, "preview": True, "diff": "..."}
+    """
+    file_path = Path(path)
+
+    if preview and not append and file_path.exists():
+        # 预览模式：生成 diff
+        try:
+            old_content = file_path.read_text(encoding="utf-8")
+        except PermissionError:
+            return {"success": False, "error": f"权限不足，无法读取: {path}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+        diff_lines = _generate_diff(old_content, content, path)
+        return {
+            "success": True,
+            "preview": True,
+            "diff": diff_lines,
+            "path": path,
+            "old_size": len(old_content),
+            "new_size": len(content),
+        }
 
     snap = None
     try:
@@ -718,7 +895,7 @@ def _extract_paths_from_operation(tool_name: str, tool_args: Dict[str, Any]) -> 
         paths.append(tool_args.get("path", ""))
     elif tool_name == ToolNames.CREATE_FILE:
         paths.append(tool_args.get("path", ""))
-    elif tool_name == ToolNames.WRITE_FILE:
+    elif tool_name == ToolNames.WRITE_FILE or tool_name == ToolNames.PREVIEW_EDIT:
         paths.append(tool_args.get("path", ""))
     elif tool_name == ToolNames.RENAME_FILE:
         paths.extend([tool_args.get("src", ""), tool_args.get("dst", "")])
@@ -1039,6 +1216,7 @@ TOOL_REGISTRY = {
     ToolNames.CREATE_FILE: create_file,
     ToolNames.READ_FILE: read_file,
     ToolNames.WRITE_FILE: write_file,
+    ToolNames.PREVIEW_EDIT: preview_edit,
     ToolNames.RENAME_FILE: rename_file,
     ToolNames.SEARCH_FILES: search_files,
     ToolNames.LIST_FILES: list_files,
@@ -1186,7 +1364,20 @@ TOOL_SCHEMAS = [
             "properties": {
                 "path": {"type": "string", "description": "要写入的文件路径"},
                 "content": {"type": "string", "description": "要写入的文件内容"},
-                "append": {"type": "boolean", "description": "是否追加模式，默认为 false（覆盖）"}
+                "append": {"type": "boolean", "description": "是否追加模式，默认为 false（覆盖）"},
+                "preview": {"type": "boolean", "description": "是否预览模式，只生成差异不实际写入（默认 false）"}
+            },
+            "required": ["path", "content"]
+        }
+    },
+    {
+        "name": ToolNames.PREVIEW_EDIT,
+        "description": "预览文件修改，显示差异对比（类 Claude Code）。此为只读操作，不会修改文件。",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "文件路径"},
+                "content": {"type": "string", "description": "要写入的新内容"}
             },
             "required": ["path", "content"]
         }
